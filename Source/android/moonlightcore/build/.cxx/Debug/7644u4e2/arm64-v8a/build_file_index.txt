@@ -1,0 +1,2 @@
+C:\Users\lucas\OneDrive\Desktop\StormVR\android\moonlightcore\src\main\jni\Android.mk
+C:\Users\lucas\OneDrive\Desktop\StormVR\android\moonlightcore\src\main\jni\Application.mk
