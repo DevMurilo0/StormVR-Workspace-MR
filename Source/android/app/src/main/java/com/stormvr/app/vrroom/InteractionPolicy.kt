@@ -10,7 +10,7 @@ object HandSamplePolicy {
     fun fresh(now: Long, sample: Long) = sample > 0L && now >= sample && now - sample <= MAX_AGE_NS
     fun predictionSeconds(now: Long, sample: Long, latency: Long): Float {
         if (!fresh(now, sample) || now - sample > 80_000_000L || latency > 100_000_000L) return 0f
-        return ((now - sample + latency) / 1e9f).coerceIn(0f, .025f)
+        return ((now - sample) / 1e9f).coerceIn(0f, .025f)
     }
     fun plausible(points: FloatArray, previous: FloatArray?, dt: Float): Boolean {
         if (points.size != 63 || points.any { !it.isFinite() }) return false

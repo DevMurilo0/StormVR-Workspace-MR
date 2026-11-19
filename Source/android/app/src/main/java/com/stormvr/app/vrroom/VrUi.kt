@@ -192,17 +192,20 @@ class VrUi {
             c.drawColor(0, PorterDuff.Mode.CLEAR)
             paint.style = Paint.Style.FILL
             paint.color = Color.argb(235, 20, 20, 28)
-            c.drawRoundRect(0f, 0f, 1400f, 120f, 26f, 26f, paint)
+            val lines=listOf(l1)+l2.split('\n')
+            val rows=lines.size.coerceAtMost(4)
+            val rowHeight=112f/rows
+            c.drawRoundRect(0f, 0f, 1400f, 120f, 18f, 18f, paint)
             paint.textAlign = Paint.Align.LEFT
-            paint.textSize = 34f
-            paint.color = Color.WHITE
-            c.drawText(l1, 24f, 46f, paint)
-            paint.textSize = 30f
-            paint.color = if (l2.contains("erro", true) || l2.contains("falha", true)) Color.rgb(255, 190, 70) else Color.rgb(214, 180, 255)
-            c.save()
-            c.clipRect(0f, 60f, 1400f, 120f)
-            c.drawText(l2, 24f, 98f, paint)
-            c.restore()
+            paint.textSize = if(rows>2) 23f else 30f
+            for((index,line) in lines.take(4).withIndex()) {
+                paint.color=if(index==0) Color.WHITE else Color.rgb(218,211,239)
+                val size=paint.textSize
+                while(paint.measureText(line)>1352f && paint.textSize>16f) paint.textSize-=1f
+                val count=paint.breakText(line,true,1352f,null)
+                c.drawText(line.take(count),24f,6f+rowHeight*index+rowHeight*.82f,paint)
+                paint.textSize=size
+            }
         }
     }
 

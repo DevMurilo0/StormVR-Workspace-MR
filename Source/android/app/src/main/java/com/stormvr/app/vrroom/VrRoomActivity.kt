@@ -1102,16 +1102,19 @@ class VrRoomActivity : Activity() {
             var sess = arSession
             if (sess == null) {
                 sess = Session(this)
+                pickCameraConfig(sess)
                 val cfg = Config(sess)
                 // só o necessário para o rastreamento de movimento: menos CPU = menos latência
                 cfg.updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
                 cfg.planeFindingMode = Config.PlaneFindingMode.DISABLED
                 cfg.lightEstimationMode = Config.LightEstimationMode.DISABLED
-                cfg.depthMode = Config.DepthMode.DISABLED
+                configureHandDepth(sess, cfg)
                 cfg.instantPlacementMode = Config.InstantPlacementMode.DISABLED
                 cfg.cloudAnchorMode = Config.CloudAnchorMode.DISABLED
-                sess.configure(cfg)
-                pickCameraConfig(sess)
+                try { sess.configure(cfg) } catch(_: Exception) {
+                    cfg.depthMode=Config.DepthMode.DISABLED; sess.configure(cfg)
+                    state.depthEnabled=false; state.depthStatus="configuração rejeitada · monocular"
+                }
                 try {
                     val camId = sess.cameraConfig.cameraId
                     val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -1143,6 +1146,18 @@ class VrRoomActivity : Activity() {
         }
     }
 
+    private val spatialDiagnostics=SpatialDiagnostics()
+    private var activeSpatialEngine=-1
+    private var activePalmWidth=-1
+
+    private fun configureHandDepth(sess: Session, cfg: Config) {
+        val supported=sess.isDepthModeSupported(Config.DepthMode.RAW_DEPTH_ONLY)
+        val requested=state.interaction.spatialEngine==2
+        state.depthEnabled=requested && supported
+        cfg.depthMode=if(requested && supported) Config.DepthMode.RAW_DEPTH_ONLY else Config.DepthMode.DISABLED
+        state.depthStatus=if(!requested) "desligada" else if(supported) "Raw: aguardando amostra válida" else "incompatível · monocular"
+    }
+
     /** Mãos ficam a ~20-60 cm da câmera: precisam de foco automático. Só 6DoF: foco fixo rastreia melhor. */
     private fun applyFocus(sess: Session) {
         try {
@@ -1150,11 +1165,15 @@ class VrRoomActivity : Activity() {
             cfg.updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
             cfg.planeFindingMode = Config.PlaneFindingMode.DISABLED
             cfg.lightEstimationMode = Config.LightEstimationMode.DISABLED
-            cfg.depthMode = Config.DepthMode.DISABLED
+            configureHandDepth(sess, cfg)
             cfg.instantPlacementMode = Config.InstantPlacementMode.DISABLED
             cfg.cloudAnchorMode = Config.CloudAnchorMode.DISABLED
             cfg.focusMode = if (state.handsOn || state.passthrough) Config.FocusMode.AUTO else Config.FocusMode.FIXED
-            sess.configure(cfg)
+            try { sess.configure(cfg) } catch(_: Exception) {
+                cfg.depthMode=Config.DepthMode.DISABLED
+                sess.configure(cfg)
+                state.depthEnabled=false; state.depthStatus="configuração rejeitada · monocular"
+            }
         } catch (_: Exception) {
         }
     }
@@ -1162,12 +1181,13 @@ class VrRoomActivity : Activity() {
     /** Escolhe a configuração de câmera: 60 fps, sem sensores extras, imagem de CPU perto de 640x480. */
     private fun pickCameraConfig(sess: Session) {
         // 60 fps: a câmera entrega o dobro de quadros, então as mãos podem passar de 30 fps (o limite era a câmera)
-        val order = arrayOf(CameraConfig.TargetFps.TARGET_FPS_60, CameraConfig.TargetFps.TARGET_FPS_30)
+        val order = if(state.interaction.spatialEngine==2) arrayOf(CameraConfig.TargetFps.TARGET_FPS_30,CameraConfig.TargetFps.TARGET_FPS_60)
+            else arrayOf(CameraConfig.TargetFps.TARGET_FPS_60, CameraConfig.TargetFps.TARGET_FPS_30)
         for (fps in order) {
             try {
                 val filter = CameraConfigFilter(sess)
                     .setTargetFps(EnumSet.of(fps))
-                    .setDepthSensorUsage(EnumSet.of(CameraConfig.DepthSensorUsage.DO_NOT_USE))
+                if(state.interaction.spatialEngine!=2) filter.setDepthSensorUsage(EnumSet.of(CameraConfig.DepthSensorUsage.DO_NOT_USE))
                 val list = sess.getSupportedCameraConfigs(filter)
                 if (list.isEmpty()) continue
                 var best = list[0]
@@ -1530,6 +1550,11 @@ class VrRoomActivity : Activity() {
                 hatNext = now + 110
             }
 
+            if(activeSpatialEngine!=state.interaction.spatialEngine || activePalmWidth!=state.interaction.palmWidthMm) {
+                activeSpatialEngine=state.interaction.spatialEngine; activePalmWidth=state.interaction.palmWidthMm
+                fingertipInteraction.cancel(); workspaceInteraction.cancel(); releaseTouches()
+                arSession?.let { applyFocus(it) }
+            }
             if(activeHandMode!=state.interaction.handMode) {
                 activeHandMode=state.interaction.handMode
                 fingertipInteraction.cancel(); workspaceInteraction.cancel(); releaseTouches()
@@ -1571,31 +1596,26 @@ class VrRoomActivity : Activity() {
     private fun refreshStatus(now: Long) {
         if (now - lastHud < 250) return
         lastHud = now
-        val ar = when (state.arState) {
-            0 -> "desligado"
-            1 -> "sem rastreio de posição (mãos funcionam)"
-            else -> "rastreando"
-        }
-        val hs = when (state.handState) {
-            0 -> "desligado"
-            1 -> "carregando modelo"
-            2 -> "procurando mãos"
-            else -> "rastreando"
-        }
-        val l1 = "GL ${state.glFps} fps | vídeo ${renderer.videoFrames} frames | ARCore: $ar  |  Mãos: $hs"
+        spatialDiagnostics.tick(state,tracker)
         if(!state.interaction.diagnostics) {
             val message=if(renderer.cameraFallback) "Camera2: sem rastreamento de mãos" else if(state.handsOn && !state.handValid.any { it }) "Mãos fora de vista · abra a mão para retomar" else ""
             ui.drawStatus(message,if(state.fingertipOwned.any { it }) fingertipInteraction.feedback else if(workspace.enabled) workspaceInteraction.feedback else "Aponte · pince · solte")
             return
         }
-        var l2 = (tracker?.info() ?: "tracker não iniciado") + " | E:${state.handValid[0]}/${state.handPinch[0]} D:${state.handValid[1]}/${state.handPinch[1]} alvo:${state.hoverKind.joinToString()}"
-        if(workspace.enabled) l2 += " | " + (if(state.fingertipOwned.any { it }) fingertipInteraction.feedback else workspaceInteraction.feedback)
-        if (renderer.camErr.isNotEmpty()) l2 += " | ${renderer.camErr}"
-        if (renderer.arErr.isNotEmpty()) l2 += " | erro AR: ${renderer.arErr}"
-        val sig = l1 + l2
+        val latency=tracker?.latest?.latNs?.div(1_000_000) ?: 0
+        val heading="GL ${state.glFps} · det ${tracker?.procFps ?: 0} fps · lat ${latency}ms · modo ${state.interaction.spatialEngine}"
+        val l2=(0..1).joinToString("\n") { h ->
+            val sample=state.handSpatial[h]
+            val distance=sample?.let { "%.2fm".format(java.util.Locale.ROOT,it.distance) } ?: "?m"
+            val confidence=sample?.let { "%.0f%%".format(java.util.Locale.ROOT,it.confidence*100) } ?: "?"
+            val source=sample?.source?.name ?: if(state.interaction.spatialEngine==0) "padrão" else "ausente"
+            val target=state.fingertipTargetId[h]?.take(12) ?: if(state.hoverKind[h]!=Hit.NONE) "principal" else workspace.hoverId?.take(12) ?: "—"
+            "${if(h==0) "E" else "D"} ${if(!state.handValid[h]) "inválida" else if(state.handObserved[h]) "vista" else "retida"} $confidence $distance $source · ${state.fingertipPhase[h]} · $target"
+        }+"\n"+state.depthStatus+" · "+fingertipInteraction.feedback
+        val sig = heading + l2
         if (sig != hudSig) {
             hudSig = sig
-            ui.drawStatus(l1, l2)
+            ui.drawStatus(heading, l2)
         }
     }
 

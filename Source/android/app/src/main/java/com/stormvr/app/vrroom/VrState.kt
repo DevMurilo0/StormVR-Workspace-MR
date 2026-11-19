@@ -95,6 +95,9 @@ class VrState {
     val interaction = InteractionSettings()
     val handInputPts = Array(2) { FloatArray(63) }
     val handObserved = BooleanArray(2)
+    val handSpatial = arrayOfNulls<SpatialHandEngine.Sample>(2)
+    @Volatile var depthEnabled=false
+    @Volatile var depthStatus = "desligada"
     @Volatile var dwell = false       // clicar olhando (~1,2 s) nos botões e no teclado, para quem está sem controle/mãos
     val gaze = FloatArray(3)          // direção do olhar (frente da cabeça) no referencial da cena, escrita pela GL thread
     @Volatile var glFps = 0
@@ -197,7 +200,7 @@ class VrState {
 
     init { updateGeom() }
 
-    fun handle() = maxOf(.09f,width * 0.055f)
+    fun handle() = maxOf(.12f,width * 0.065f)
     fun cornerS(i: Int) = wx + (if (i % 2 == 0) -1f else 1f) * (win.w / 2f + handle() * 1.05f)
     fun cornerZ(i: Int) = win.cz + (if (i < 2) 1f else -1f) * (win.h / 2f + handle() * 1.05f)
 
@@ -277,6 +280,7 @@ class VrState {
         dx: Float, dy: Float, dz: Float,
         out: FloatArray
     ): Boolean {
+        if(floatArrayOf(ox,oy,oz,dx,dy,dz).any { !it.isFinite() } || dx*dx+dy*dy+dz*dz<1e-12f) return false
         if (screenIdentity()) return intersectLocal(ox, oy, oz, dx, dy, dz, out)
         // leva o raio para as coordenadas LOCAIS da tela (inversa da transformação = transposta da rotação)
         val a = FloatArray(9); val b = FloatArray(3); screenXf(a, b)
@@ -297,7 +301,7 @@ class VrState {
     ): Boolean {
         val k = curveK()
         if (k < 1e-4f) {
-            if (dy < 0.05f) return false
+            if (!dy.isFinite() || dy <= 1e-6f * sqrt(dx*dx+dy*dy+dz*dz)) return false
             val t = (distance - oy) / dy
             if (t <= 0f) return false
             out[0] = ox + t * dx

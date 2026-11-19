@@ -7,6 +7,7 @@ import kotlin.math.*
 /** Shares the existing filtered hand/gamepad rays, not a second camera or MediaPipe instance. */
 class WorkspaceInteraction(private val workspace: WorkspaceManager,private val state: VrState,private val displays: WorkspaceDisplays) {
     private data class Action(val screen: VirtualScreen,val kind: Int,val s: Float,val z: Float,val width: Float,val x: Float,val height: Float,val started: Long,val hand: Boolean)
+    private val manipulation=Array(2) { FingertipManipulation() }
     private val captures=Array(2) { ClickCapture() }
     private val dwell=Array(2) { DwellSelector() }
     private val actions=arrayOfNulls<Action>(2)
@@ -20,7 +21,7 @@ class WorkspaceInteraction(private val workspace: WorkspaceManager,private val s
     private val point=FloatArray(3)
     var feedback="Aponte para uma tela"
         private set
-    fun cancel() { scaleScreen=null; for(i in 0..1) { actions[i]?.takeIf { it.kind==0 }?.let { send(it,MotionEvent.ACTION_CANCEL,captures[i].x,captures[i].y) }; captures[i].cancel(); dwell[i].reset(); actions[i]=null; wasDown[i]=false } }
+    fun cancel() { scaleScreen=null; for(i in 0..1) { actions[i]?.takeIf { it.kind==0 }?.let { send(it,MotionEvent.ACTION_CANCEL,captures[i].x,captures[i].y) }; captures[i].cancel(); manipulation[i].end(); dwell[i].reset(); actions[i]=null; wasDown[i]=false } }
     private fun send(a: Action,kind: Int,s: Float,z: Float): Boolean {
         val g=a.screen.pose.win
         val x=SurfaceCoordinates.pixel(s,g.cx,g.w,VrState.TEX_W)
@@ -67,20 +68,14 @@ class WorkspaceInteraction(private val workspace: WorkspaceManager,private val s
                 var best: VirtualScreen?=null; var bestDistance=Float.MAX_VALUE; var bs=0f; var bz=0f
                 for(screen in workspace.screens) {
                     val p=screen.pose; if(!screen.visible) continue
-                    if(!p.intersectSurface(ox,oy,oz,dx,dy,dz,hit)) continue
-                    val g=p.win
-                    if(screen.locked && (abs(hit[0]-g.cx)>g.w/2 || abs(hit[1]-g.cz)>g.h/2)) continue
-                    if((abs(hit[0]-g.cx)>g.w/2 || abs(hit[1]-g.cz)>g.h/2) && !ScreenControls.inBar(p,hit[0],hit[1]) && ScreenControls.cornerAt(p,hit[0],hit[1])<0) continue
-                    p.surfPoint(hit[0],hit[1],0f,point)
-                    val dist=(point[0]-ox).pow(2)+(point[1]-oy).pow(2)+(point[2]-oz).pow(2)
+                    val surface=SpatialRaycast.hit(p,ox,oy,oz,dx,dy,dz,screen.locked) ?: continue
+                    hit[0]=surface.s; hit[1]=surface.z; val dist=surface.distanceSquared
                     if(dist<bestDistance) { best=screen; bestDistance=dist; bs=hit[0]; bz=hit[1] }
                 }
                 // Compare the main visible monitor too, so a rear display cannot intercept it.
-                if(best!=null && !state.screenHidden && state.intersectSurface(ox,oy,oz,dx,dy,dz,hit) &&
-                    abs(hit[0]-state.win.cx)<=state.win.w/2 && abs(hit[1]-state.win.cz)<=state.win.h/2) {
-                    state.surfPoint(hit[0],hit[1],0f,point)
-                    val mainDistance=(point[0]-ox).pow(2)+(point[1]-oy).pow(2)+(point[2]-oz).pow(2)
-                    if(mainDistance<bestDistance) best=null
+                if(best!=null && !state.screenHidden) {
+                    val main=SpatialRaycast.hit(state,ox,oy,oz,dx,dy,dz)
+                    if(main!=null && main.distanceSquared<=bestDistance) best=null
                 }
                 if(best!=null) {
                     best.pose.surfPoint(bs,bz,.014f,point)
@@ -104,6 +99,7 @@ class WorkspaceInteraction(private val workspace: WorkspaceManager,private val s
                     val kind=if(screen.locked) 0 else if(corner) 2 else if(ScreenControls.inBar(p,bs,bz)) 1 else 0
                     action=Action(screen,kind,bs,bz,p.width,p.wx,p.wz,SystemClock.uptimeMillis(),state.handsOn && state.handValid[i])
                     actions[i]=action
+                    if(kind!=0) manipulation[i].begin(p,bs,bz,ScreenControls.cornerAt(p,bs,bz),SystemClock.uptimeMillis())
                     if(kind==0) {
                         captures[i].update(true,true,true,bs,bz,p.width*.012f)
                         if(!send(action!!,MotionEvent.ACTION_DOWN,bs,bz)) {
@@ -127,10 +123,12 @@ class WorkspaceInteraction(private val workspace: WorkspaceManager,private val s
                         if(sent && e!=ClickCapture.Event.CANCEL) state.clickSentAt[i]=SystemClock.uptimeMillis()
                         feedback=if(e==ClickCapture.Event.CANCEL) "Rastreamento perdido · cancelado" else if(sent) "Clique enviado" else "Destino recusou o clique"
                     } else feedback="Posição atualizada"
-                    actions[i]=null
+                    actions[i]=null; manipulation[i].end()
                 } else if(intersects) {
-                    if(a.kind==1 && !a.screen.locked) { p.wx=a.x+hit[0]-a.s; p.wz=a.height+hit[1]-a.z }
-                    if(a.kind==2 && !a.screen.locked) p.width=(a.width+2f*(hit[0]-a.s)*sign(a.s-p.win.cx)).coerceIn(.6f,7.5f)
+                    if(a.kind!=0 && !a.screen.locked) {
+                        if(a.hand && !state.handObserved[i]) manipulation[i].hold()
+                        else manipulation[i].update(p,a.kind==2,ox,oy,oz,dx,dy,dz,SystemClock.uptimeMillis())
+                    }
                     if(a.kind==0 && captures[i].update(true,true,true,hit[0],hit[1],p.width*.012f)==ClickCapture.Event.MOVE) {
                         send(a,MotionEvent.ACTION_MOVE,captures[i].x,captures[i].y); feedback="Arrastando ${a.screen.name}"
                     }

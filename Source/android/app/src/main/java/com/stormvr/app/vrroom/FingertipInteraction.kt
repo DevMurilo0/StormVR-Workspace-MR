@@ -15,6 +15,7 @@ class FingertipInteraction(
     private data class Target(val id: String,val pose: VrState,val kind: FingertipGesture.Kind,
         val hitKind: Int,val index: Int,val s: Float,val z: Float,val screen: VirtualScreen?=null)
     private val gestures=Array(2) { FingertipGesture() }
+    private val grip=BooleanArray(2)
     private val motion=Array(2) { FingertipManipulation() }
     private val hoveredPose=arrayOfNulls<VrState>(2)
     private val claimedKey=arrayOfNulls<String>(2)
@@ -26,6 +27,7 @@ class FingertipInteraction(
     var feedback="Estenda o indicador · dobre para soltar"
         private set
     fun cancel() {
+        grip.fill(false)
         for(i in 0..1) { gestures[i].reset(); motion[i].end(); captured[i]=null; hoveredPose[i]=null; claimedKey[i]=null; missed[i]=-1 }
         state.fingertipOwned.fill(false); state.fingertipTargetId.fill(null)
         state.fingertipPhase.fill(FingertipGesture.Phase.IDLE)
@@ -45,13 +47,10 @@ class FingertipInteraction(
         }
         if(workspace.enabled) for(screen in workspace.screens) {
             val p=screen.pose
-            if(!screen.visible || !p.intersectSurface(ox,oy,oz,ray[0],ray[1],ray[2],hit)) continue
-            val corner=if(screen.locked) -1 else ScreenControls.cornerAt(p,hit[0],hit[1])
-            val bar=!screen.locked && ScreenControls.inBar(p,hit[0],hit[1])
-            val inside=abs(hit[0]-p.wx)<=p.win.w/2 && abs(hit[1]-p.wz)<=p.win.h/2
-            if(!inside && corner<0 && !bar) continue
-            p.surfPoint(hit[0],hit[1],.012f,point)
-            val d=(point[0]-ox).pow(2)+(point[1]-oy).pow(2)+(point[2]-oz).pow(2)
+            if(!screen.visible) continue
+            val surface=SpatialRaycast.hit(p,ox,oy,oz,ray[0],ray[1],ray[2],screen.locked) ?: continue
+            hit[0]=surface.s; hit[1]=surface.z
+            val corner=surface.corner; val bar=surface.bar; val d=surface.distanceSquared
             if(d<distance) {
                 val kind=if(corner>=0) FingertipGesture.Kind.RESIZE else if(bar) FingertipGesture.Kind.MOVE else FingertipGesture.Kind.CLICK
                 best=Target("${screen.id}:$kind:$corner",p,kind,Hit.WIN,corner,hit[0],hit[1],screen)
@@ -78,7 +77,7 @@ class FingertipInteraction(
             val g=gestures[i]
             val hardware=if(i==0) state.l2 else state.r2
             val enabled=state.interaction.handMode!=InteractionSettings.PINCH && state.handSource==0 &&
-                state.handsOn && state.laserHand[i] && hardware<.2f
+                state.handsOn && (state.laserHand[i] || g.ownsTarget) && hardware<.2f
             state.fingertipOwned[i]=enabled
             if(!enabled) {
                 g.reset(); motion[i].end(); captured[i]=null; hoveredPose[i]=null; claimedKey[i]=null; state.fingertipTargetId[i]=null
@@ -91,6 +90,8 @@ class FingertipInteraction(
             ray[0]=point[0]-state.rox[i]; ray[1]=point[1]-state.roy[i]; ray[2]=point[2]-state.roz[i]
             var t=captured[i] ?: target(i)
             val observed=state.handValid[i] && state.handObserved[i]
+            val spatialMode=state.interaction.handMode==InteractionSettings.SPATIAL
+            if(observed) grip[i]=SpatialPose.gripping(state.handInputPts[i],grip[i],state.handPinch[i])
             val pointing=state.fingertipPointing[i]
             val candidate=t
             val allowed=candidate?.screen?.let { it in workspace.screens && it.visible && (candidate.kind==FingertipGesture.Kind.CLICK || !it.locked) }
@@ -100,23 +101,30 @@ class FingertipInteraction(
             if(dwellOnly && t?.kind!=FingertipGesture.Kind.CLICK) t=null
             hoveredPose[i]=if((observed && pointing || g.captured) && t!=null && t.hitKind!=Hit.KB && t.hitKind!=Hit.TB) t.pose else null
             claimedKey[i]=if(observed && pointing) t?.id else null
-            val click=g.update(t?.id,t?.kind ?: FingertipGesture.Kind.CLICK,
+            val occludedTap=spatialMode && g.ownsTarget && !g.captured && target(i)?.id!=t?.id
+            val click=if(spatialMode) g.updateSpatial(t?.id,t?.kind ?: FingertipGesture.Kind.CLICK,
+                state.ax[i]/(t?.pose?.width ?: 1f),state.az[i]/(t?.pose?.width ?: 1f),
+                observed,pointing,grip[i],!allowed || occludedTap,now,.04f) else g.update(t?.id,t?.kind ?: FingertipGesture.Kind.CLICK,
                 (t?.s ?: 0f)/(t?.pose?.width ?: 1f),(t?.z ?: 0f)/(t?.pose?.width ?: 1f),
                 observed,pointing,!allowed,now,state.interaction.dragActivationMs,state.interaction.dwellMs,
                 .012f+state.interaction.fingertipSensitivity*.025f)
+            if(spatialMode && g.ownsTarget && captured[i]==null && t!=null) captured[i]=t
             if(!before && g.captured && t!=null) {
                 captured[i]=t
-                motion[i].begin(t.pose,t.s,t.z,t.index,now)
+                val anchor=FloatArray(2)
+                val anchored=spatialMode && t.pose.intersectSurface(state.rox[i],state.roy[i],state.roz[i],ray[0],ray[1],ray[2],anchor)
+                motion[i].begin(t.pose,if(anchored) anchor[0] else t.s,if(anchored) anchor[1] else t.z,t.index,now)
                 t.screen?.let { workspace.selectedId=it.id }
             } else if(g.captured && t!=null) {
-                if(!observed || !pointing) motion[i].hold()
+                if(!observed || (!spatialMode && !pointing)) motion[i].hold()
                 else {
                     val ok=motion[i].update(t.pose,g.phase==FingertipGesture.Phase.RESIZING,state.rox[i],state.roy[i],state.roz[i],ray[0],ray[1],ray[2],now)
+                    if(ok && spatialMode && g.phase!=FingertipGesture.Phase.RESIZING) motion[i].updateDepth(t.pose,state.handSpatial[i],now)
                     if(ok) missed[i]=-1 else if(missed[i]<0) missed[i]=now else if(now-missed[i]>350) g.release(now)
                 }
             }
-            if(before && !g.captured) { motion[i].end(); captured[i]=null; hoveredPose[i]=null; claimedKey[i]=null; missed[i]=-1 }
-            state.fingertipTargetId[i]=if(g.captured) t?.screen?.id ?: "main" else null
+            if((before && !g.captured) || (spatialMode && !g.ownsTarget)) { motion[i].end(); captured[i]=null; hoveredPose[i]=null; claimedKey[i]=null; missed[i]=-1 }
+            state.fingertipTargetId[i]=if(g.ownsTarget) t?.screen?.id ?: "main" else null
             state.fingertipPhase[i]=g.phase
             state.dwellProgress[i]=g.progress
             t?.let {
@@ -136,8 +144,8 @@ class FingertipInteraction(
                     if(sent) state.clickSentAt[i]=now
                     feedback=if(sent) "Clique enviado" else "Destino não recebeu o clique"
                 } else feedback=when(g.phase) {
-                    FingertipGesture.Phase.DRAGGING->"Movendo · dobre o indicador para soltar"
-                    FingertipGesture.Phase.RESIZING->"Redimensionando · dobre o indicador para soltar"
+                    FingertipGesture.Phase.DRAGGING->if(spatialMode) "${motion[i].depthMotion} · abra a mão para soltar" else "Movendo · dobre o indicador para soltar"
+                    FingertipGesture.Phase.RESIZING->if(spatialMode) "Redimensionando · abra a mão para soltar" else "Redimensionando · dobre o indicador para soltar"
                     FingertipGesture.Phase.ARMED->"Pronto · mantenha o indicador estável"
                     FingertipGesture.Phase.HOVER->"Alvo identificado · mantenha o indicador"
                     FingertipGesture.Phase.RELEASED->"Liberado"

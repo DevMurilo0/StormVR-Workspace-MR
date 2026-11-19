@@ -185,4 +185,52 @@ class AndroidInteractionTest {
         }
     }
 
+    @Test fun spatialTapClicksOnceWithoutDwellOrDrag() {
+        val activity=Robolectric.buildActivity(Activity::class.java).setup().get()
+        val s=VrState().apply { handsOn=true; curved=false; interaction.handMode=InteractionSettings.SPATIAL; updateGeom() }
+        val ws=WorkspaceManager(activity,s); val displays=WorkspaceDisplays(activity)
+        var clicks=0
+        val finger=FingertipInteraction(s,ws,displays,WorkspaceInteraction(ws,s,displays)) { _,_,_,_,_ -> clicks++; true }
+        fun tick(t: Long,pinch: Boolean) {
+            s.laserHand[1]=true; s.handValid[1]=true; s.handObserved[1]=true; s.fingertipPointing[1]=true; s.handPinch[1]=pinch
+            s.ax[1]=s.wx; s.az[1]=s.wz; s.hoverKind[1]=Hit.WIN
+            val point=FloatArray(3); s.surfPoint(s.wx,s.wz,0f,point)
+            s.hitX[1]=point[0]; s.hitY[1]=point[1]; s.hitZ[1]=point[2]
+            finger.tick(t)
+        }
+        tick(0,false); tick(100,true); tick(180,true)
+        assertEquals(0,clicks); assertEquals(FingertipGesture.Phase.ARMED,s.fingertipPhase[1])
+        tick(200,false); tick(280,false); tick(350,false)
+        assertEquals(1,clicks); assertFalse(s.inputCaptured[1])
+    }
+
+    @Test fun spatialCaptureKeepsWindowOnBriefLossThenReleasesWithoutClick() {
+        val activity=Robolectric.buildActivity(Activity::class.java).setup().get()
+        val s=VrState().apply { handsOn=true; curved=false; interaction.handMode=InteractionSettings.SPATIAL; updateGeom() }
+        val ws=WorkspaceManager(activity,s); val displays=WorkspaceDisplays(activity)
+        var clicks=0
+        val finger=FingertipInteraction(s,ws,displays,WorkspaceInteraction(ws,s,displays)) { _,_,_,_,_ -> clicks++; true }
+        s.laserHand[1]=true; s.handValid[1]=true; s.handObserved[1]=true; s.fingertipPointing[1]=true
+        s.ax[1]=s.bar.cx; s.az[1]=s.bar.cz; s.hoverKind[1]=Hit.BAR
+        val point=FloatArray(3); s.surfPoint(s.bar.cx,s.bar.cz,0f,point)
+        s.hitX[1]=point[0]; s.hitY[1]=point[1]; s.hitZ[1]=point[2]
+        finger.tick(0); s.handPinch[1]=true; finger.tick(100); finger.tick(180)
+        assertEquals("main",s.fingertipTargetId[1])
+        val x=s.wx
+        s.handObserved[1]=false; s.laserHand[1]=false
+        finger.tick(250); assertEquals("main",s.fingertipTargetId[1]); assertEquals(x,s.wx,0f)
+        finger.tick(401); assertNull(s.fingertipTargetId[1]); assertEquals(0,clicks)
+    }
+
+    @Test fun spatialPreferencesPersistWithoutChangingDefaultMode() {
+        val activity=Robolectric.buildActivity(Activity::class.java).setup().get()
+        val prefs=activity.getSharedPreferences("spatial-test",Context.MODE_PRIVATE)
+        val settings=InteractionSettings().apply { spatialEngine=2; palmWidthMm=92; handMode=InteractionSettings.SPATIAL }
+        settings.save(prefs)
+        val restored=InteractionSettings(); restored.load(prefs)
+        assertEquals(2,restored.spatialEngine); assertEquals(92,restored.palmWidthMm); assertEquals(3,restored.handMode)
+        prefs.edit().clear().commit(); restored.load(prefs)
+        assertEquals(0,restored.spatialEngine); assertEquals(InteractionSettings.INDICATOR,restored.handMode)
+    }
+
 }

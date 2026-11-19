@@ -53,7 +53,7 @@ class InteractionPolicyTest {
     }
     @Test fun predictionIsBoundedAndDisabledWhenUncertain() {
         val now=1_000_000_000L
-        assertEquals(.025f,HandSamplePolicy.predictionSeconds(now,now-20_000_000,30_000_000),.0001f)
+        assertEquals(.020f,HandSamplePolicy.predictionSeconds(now,now-20_000_000,30_000_000),.0001f)
         assertEquals(0f,HandSamplePolicy.predictionSeconds(now,now-90_000_000,20_000_000),0f)
         assertEquals(0f,HandSamplePolicy.predictionSeconds(now,now-10_000_000,150_000_000),0f)
     }

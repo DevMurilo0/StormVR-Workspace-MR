@@ -480,27 +480,30 @@ class VrRenderer(
     }
 
     /** Matriz olho->cena a partir da pose do ARCore (mesma transformação usada na posição da cabeça). */
-    private fun eyeToSceneFromAr(out: FloatArray) {
+    private fun eyeToSceneFromAr(out: FloatArray, sensorMatrix: FloatArray) {
         val a = heading0 - yawOff
         val c = cos(a)
         val sn = sin(a)
         for (col in 0..2) {
-            val mx = arM[col * 4]
-            val my = -arM[col * 4 + 2]
-            val mz = arM[col * 4 + 1]
+            val mx = sensorMatrix[col * 4]
+            val my = -sensorMatrix[col * 4 + 2]
+            val mz = sensorMatrix[col * 4 + 1]
             out[col * 4] = mx * c - my * sn
             out[col * 4 + 1] = mx * sn + my * c
             out[col * 4 + 2] = mz
             out[col * 4 + 3] = 0f
         }
-        val dx = arM[12] - raw0[0]
-        val dy = -arM[14] - raw0[1]
-        val dz = arM[13] - raw0[2]
+        val dx = sensorMatrix[12] - raw0[0]
+        val dy = -sensorMatrix[14] - raw0[1]
+        val dz = sensorMatrix[13] - raw0[2]
         out[12] = dx * c - dy * sn
         out[13] = dx * sn + dy * c
         out[14] = dz
         out[15] = 1f
     }
+
+    private val handSensorPose=FloatArray(16)
+    private val rawDepthReader=RawHandDepthReader()
 
     private fun submitHandFrame(
         frame: com.google.ar.core.Frame,
@@ -512,18 +515,24 @@ class VrRenderer(
         try {
             val im = frame.acquireCameraImage()
             img = im
+            if(kotlin.math.abs(im.timestamp-frame.timestamp)>5_000_000L) return
             val rot = imageRotation(frame)
+            frame.camera.pose.toMatrix(handSensorPose,0)
             tr.submit { j ->
                 j.copyFrom(im)
-                if (useArPose) eyeToSceneFromAr(j.pose) else Matrix.invertM(j.pose, 0, view, 0)
+                if (useArPose) eyeToSceneFromAr(j.pose,handSensorPose) else Matrix.invertM(j.pose, 0, view, 0)
                 j.fx = intr.focalLength[0]
                 j.fy = intr.focalLength[1]
                 j.cx = intr.principalPoint[0]
                 j.cy = intr.principalPoint[1]
                 j.rot = rot
                 j.sensorPose = useArPose
-                j.tsNs = frame.timestamp
+                j.tsNs = im.timestamp
                 j.submitNs = System.nanoTime()
+                val cameraAge=SystemClock.elapsedRealtimeNanos()-im.timestamp
+                j.captureNs=if(cameraAge in 0..220_000_000L) j.submitNs-cameraAge else 0L
+                j.rawDepth=if(st.interaction.spatialEngine==2 && st.depthEnabled) rawDepthReader.acquire(frame) else null
+                if(st.depthEnabled) st.depthStatus=rawDepthReader.status
             }
             camErr = ""
         } catch (e: Exception) {
@@ -545,6 +554,9 @@ class VrRenderer(
                 val ok = f != null && f.valid[h] && HandSamplePolicy.fresh(now, f.sampleNs[h])
                 st.handValid[h] = ok
                 st.handObserved[h] = ok && f!!.observed[h]
+                st.handSpatial[h] = if(ok) f!!.spatial[h]?.let { sample ->
+                    if(now-sample.timestampNs>80_000_000L) sample.copy(depthReliable=false) else sample
+                } else null
                 st.handPinch[h] = ok && f!!.pinch[h]
                 st.handRatio[h] = if (ok) f!!.ratio[h] else 1f
                 st.handClosing[h] = ok && f!!.closing[h]
