@@ -40,6 +40,10 @@ public class MoonlightSession implements NvConnectionListener, PerfOverlayListen
     public MoonlightSession(Activity act, Events ev) { this.act = act; this.ev = ev; }
 
     public void start(String host, NvApp app, MoonlightStore st, Surface surface) {
+        start(host, app, st, surface, false);
+    }
+
+    public void start(String host, NvApp app, MoonlightStore st, Surface surface, boolean h264Only) {
         this.host = host;
         com.limelight.binding.video.MediaCodecHelper.initialize(act, "");   // obrigatorio antes do MediaCodecDecoderRenderer (o Artemis chama isso em Game.onCreate)
         PreferenceConfiguration prefs = PreferenceConfiguration.readPreferences(act);
@@ -51,7 +55,9 @@ public class MoonlightSession implements NvConnectionListener, PerfOverlayListen
         audio = new AndroidAudioRenderer(act, false);
 
         int formats = MoonBridge.VIDEO_FORMAT_H264;
-        // Workspace baseline: H.264 reduces decoder and old-host compatibility pressure.
+        // Constrain codecs only in Workspace MR; preserve the normal Moonlight capabilities.
+        if (!h264Only && decoder.isHevcSupported()) formats |= MoonBridge.VIDEO_FORMAT_H265;
+        if (!h264Only && decoder.isAv1Supported()) formats |= MoonBridge.VIDEO_FORMAT_AV1_MAIN8;
 
         StreamConfiguration config = new StreamConfiguration.Builder()
                 .setResolution(st.width(), st.height())

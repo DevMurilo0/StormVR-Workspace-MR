@@ -83,6 +83,7 @@ class MoonlightPane(ctx: Context, private val act: Activity) : FrameLayout(ctx),
     private val msg = TextView(ctx)
     private var session: MoonlightSession? = null
     private var surfaceReady = false
+    var workspaceH264 = false
     private var directSurface: android.view.Surface? = null
     private var requested: Pair<String, NvApp>? = null
 
@@ -257,7 +258,7 @@ class MoonlightPane(ctx: Context, private val act: Activity) : FrameLayout(ctx),
             override fun onEnded(code: Int,message: String) { if(epoch == connectionGeneration) this@MoonlightPane.onEnded(code,message) }
         })
         session = s
-        try { s.start(ip, app, store, directSurface?.takeIf { it.isValid } ?: sv.holder.surface) } catch (e: Throwable) { s.stop(); session = null; say("Falha ao iniciar: ${e.message ?: e.javaClass.simpleName}"); scheduleRetry() }
+        try { s.start(ip, app, store, directSurface?.takeIf { it.isValid } ?: sv.holder.surface, workspaceH264) } catch (e: Throwable) { s.stop(); session = null; say("Falha ao iniciar: ${e.message ?: e.javaClass.simpleName}"); scheduleRetry() }
     }
 
     fun close() {

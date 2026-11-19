@@ -1240,6 +1240,7 @@ class VrRoomActivity : Activity() {
     }
 
     private fun applyTvVisibility() {
+        tvMoon?.workspaceH264=workspace.enabled
         web?.visibility = if (tvApp == TvApp.BROWSER) View.VISIBLE else View.GONE
         tvHome?.visibility = if (tvApp == TvApp.HOME) View.VISIBLE else View.GONE
         workspacePanel?.visibility = if(tvApp == TvApp.WORKSPACE) View.VISIBLE else View.GONE
