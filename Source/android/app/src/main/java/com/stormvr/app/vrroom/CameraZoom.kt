@@ -5,7 +5,7 @@ object CameraZoom {
     const val MIN=.4f
     const val MAX=2f
     fun clamp(value: Float)=if(value.isFinite()) value.coerceIn(MIN,MAX) else MIN
-    fun effective(value: Float,passthrough: Boolean,fullscreen: Boolean)=if(passthrough && !fullscreen) clamp(value) else MIN
+    fun effective(value: Float,passthrough: Boolean,fullscreen: Boolean)=if(passthrough && !fullscreen) clamp(value) else 1f
     fun applyProjection(matrix: FloatArray,zoom: Float) {
         val z=clamp(zoom)
         // Column-major: scale the complete X/Y rows, including the off-center principal point.
