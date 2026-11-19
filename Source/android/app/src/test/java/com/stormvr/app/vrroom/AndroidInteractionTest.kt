@@ -125,7 +125,9 @@ class AndroidInteractionTest {
             s.ax[i]=s.bar.cx; s.az[i]=s.bar.cz; s.hoverKind[i]=Hit.BAR
             s.surfPoint(s.ax[i],s.az[i],0f,point); s.hitX[i]=point[0]; s.hitY[i]=point[1]; s.hitZ[i]=point[2]
         }
-        aim(); finger.tick(0); aim(); finger.tick(600)
+        aim(); finger.tick(0); aim(); finger.tick(999)
+        assertFalse(s.fingertipPhase[i]==FingertipGesture.Phase.DRAGGING)
+        aim(); finger.tick(1000)
         assertEquals(FingertipGesture.Phase.DRAGGING,s.fingertipPhase[i]); assertEquals(0,clicks)
         assertFalse(s.pressed[i]); assertFalse(s.handPinch[i])
         s.r2=1f; s.pressed[i]=true; finger.tick(620)
@@ -205,7 +207,7 @@ class AndroidInteractionTest {
             finger.tick(t)
         }
         tick(0,false); tick(100,true); tick(180,true)
-        assertEquals(0,clicks); assertEquals(FingertipGesture.Phase.ARMED,s.fingertipPhase[1])
+        assertEquals(1,clicks); assertEquals(FingertipGesture.Phase.ARMED,s.fingertipPhase[1])
         tick(200,false); tick(280,false); tick(350,false)
         assertEquals(1,clicks); assertFalse(s.inputCaptured[1])
     }
