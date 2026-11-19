@@ -40,7 +40,7 @@ Permita câmera ao abrir o app. ARCore compatível é necessário para mãos; o 
 
 ## Uso
 
-Abra as preferências do Workspace para **Interação VR**. Os padrões usam pinça com histerese e debounce, mão direita, teclado a 0,75 m e escala 1,15. Abra a mão antes da primeira pinça e depois de perder o rastreamento. Aponte, pince e solte; perda de rastreamento cancela o pressionamento. O conteúdo recebe DOWN/MOVE/UP; a tecla virtual só digita ao soltar. Backspace segurado repete após 500 ms a cada 100 ms. Clique por permanência usa 0,8–1,2 s, progresso circular e tolerância espacial.
+O padrão de **Modo de interação das mãos** agora é **Indicador (recomendado)**. Estenda o indicador, mantenha-o na barra superior ou no canto por 600 ms e mova a mão; dobre o dedo para soltar. Botões e teclas usam clique único por permanência. **Pinça (clássico)** preserva DOWN/MOVE/UP, digitação ao soltar e repetição controlada do Backspace; gamepad continua disponível. Mão direita, teclado a 0,75 m e escala 1,15 continuam como padrões. Em **Tela e mundo → Zoom da câmera**, ative Modo câmera para ajustar o recorte digital de 1.0x a 2.0x. Veja [Indicador e zoom da câmera](FINGERTIP_CAMERA_ZOOM.md) para comportamento, limites e validação desta alteração.
 
 O teclado oferece ABC/123/Símb./Avançado, ç e acentos, Caps/Shift, setas, Enter e Fechar. A barra inferior permite reposicionar por órbita. Tamanho e distância ficam nas preferências. Selecione um campo na tela de destino antes de digitar. O teclado preserva o foco desse campo. A ponte Linux JPEG/HTTPS continua sem injeção remota de mouse/teclado; eventos locais numa página WebView não adicionam essa capacidade.
 

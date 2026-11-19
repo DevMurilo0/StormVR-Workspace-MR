@@ -90,6 +90,8 @@ class VrRoomActivity : Activity() {
     private val state = VrState()
     private val workspace = WorkspaceManager(this,state)
     private val workspaceDisplays by lazy { WorkspaceDisplays(this) }
+    private val fingertipInteraction by lazy { FingertipInteraction(state,workspace,workspaceDisplays,workspaceInteraction,::fingertipClick) }
+    private var activeHandMode=-1
     private val workspaceInteraction by lazy { WorkspaceInteraction(workspace,state,workspaceDisplays) }
     private var workspacePanel: WorkspacePanel? = null
     private val ui = VrUi()
@@ -292,7 +294,7 @@ class VrRoomActivity : Activity() {
             state.extraLean=0f; state.extraDrop=0f; state.extrasActive=false
             if(!vrMode) enterVr() else { stopAr(); startAr(); showTv(TvApp.HOME) }
         }, leave = {
-            workspaceInteraction.cancel(); workspace.enabled=false; workspaceDisplays.close()
+            workspaceInteraction.cancel(); fingertipInteraction.cancel(); workspace.enabled=false; workspaceDisplays.close()
             state.passthrough=false
             state.imuPos=getSharedPreferences("vrroom",0).getBoolean("imupos",true)
             applyExtras()
@@ -398,6 +400,7 @@ class VrRoomActivity : Activity() {
     override fun onPause() {
         Choreographer.getInstance().removeFrameCallback(frameCb)
         workspaceInteraction.cancel()
+        fingertipInteraction.cancel()
         pendingKey.fill(-1); pendingToolbar.fill(-1); prevPressed.fill(false); state.inputCaptured.fill(false)
         releaseTouches()
         workspaceDisplays.pause()
@@ -715,11 +718,15 @@ class VrRoomActivity : Activity() {
                 setOnClickListener { state.scrAz = 0f; state.scrEl = 0f; state.scrYaw = 0f; state.scrPitch = 0f; state.scrRoll = 0f; savePrefs(); toast("Tela zerada: reinicie a Sala para atualizar os controles do painel") }
             })
             addView(camBox)
+            val cameraZoom=CameraZoomControls(this@VrRoomActivity,state) { state.interaction.save(getSharedPreferences("vr_interaction",0)) }
+            addView(cameraZoom)
+            camBox.setOnCheckedChangeListener { _,c -> state.passthrough=c; cameraZoom.refresh() }
             addView(liteBox)
             // ---- rastreamento (3DoF/6DoF e Bluetooth ficam só na tela inicial: uma escolha, sem repetir)
             tgt = pgMaos
             addView(head("Rastreamento"))
             addView(handsBox)
+            addView(HandInteractionControls(this@VrRoomActivity,state.interaction) { state.interaction.save(getSharedPreferences("vr_interaction",0)) })
             addView(fingerBox)
             addView(com.stormvr.app.ExtrasUi.build(this@VrRoomActivity))
             addView(hlaserBox)
@@ -1047,7 +1054,7 @@ class VrRoomActivity : Activity() {
     }
 
     private fun exitVr() {
-        workspaceInteraction.cancel(); workspaceDisplays.pause(); tvMoon?.close()
+        workspaceInteraction.cancel(); fingertipInteraction.cancel(); workspaceDisplays.pause(); tvMoon?.close()
         vrMode = false
         extras?.stop()
         stopHub()
@@ -1467,7 +1474,7 @@ class VrRoomActivity : Activity() {
      */
     private fun updateGaze() {
         val s = state
-        gazeOn = s.dwell && !ControllerHub.hand(false).active() && !(s.handsOn && s.handValid.any { it })
+        gazeOn = (s.dwell || s.interaction.handMode==InteractionSettings.DWELL) && !ControllerHub.hand(false).active() && !(s.handsOn && s.handValid.any { it })
         if (!gazeOn) return
         val i=s.interaction.dominantHand
         val g = s.gaze
@@ -1489,7 +1496,8 @@ class VrRoomActivity : Activity() {
         val s=state
         ui.dwellProgress=0f
         for(i in 0..1) {
-            if(!s.dwell || i!=s.interaction.dominantHand) { dwellSelectors[i].reset(); continue }
+            if(s.fingertipOwned[i]) { ui.dwellProgress=maxOf(ui.dwellProgress,s.dwellProgress[i]); dwellSelectors[i].reset(); continue }
+            if((!s.dwell && s.interaction.handMode!=InteractionSettings.DWELL) || i!=s.interaction.dominantHand) { dwellSelectors[i].reset(); continue }
             val kind=s.hoverKind[i]
             val eligible=kind==Hit.TB || kind==Hit.KB || kind==Hit.WIN
             val key=if(eligible) "$kind:${s.hoverIdx[i]}" else null
@@ -1522,6 +1530,11 @@ class VrRoomActivity : Activity() {
                 hatNext = now + 110
             }
 
+            if(activeHandMode!=state.interaction.handMode) {
+                activeHandMode=state.interaction.handMode
+                fingertipInteraction.cancel(); workspaceInteraction.cancel(); releaseTouches()
+                pendingKey.fill(-1); pendingToolbar.fill(-1); prevPressed.fill(false); drag.fill(D_NONE); state.inputCaptured.fill(false)
+            }
             state.moveAim(dt)
             updateHandsAndTriggers()
             updateHubControllers(now)
@@ -1532,6 +1545,8 @@ class VrRoomActivity : Activity() {
             workspaceDisplays.budget(workspace.screens,state)
             for (i in 0..1) pick(i)
             state.dwellProgress.fill(0f)
+            fingertipInteraction.tick(now)
+            if(!vrMode) return
             workspaceInteraction.tick()
             updateDwell(now)
             // Keyboard input has one owner: captured pinch or dwell.
@@ -1570,11 +1585,11 @@ class VrRoomActivity : Activity() {
         val l1 = "GL ${state.glFps} fps | vídeo ${renderer.videoFrames} frames | ARCore: $ar  |  Mãos: $hs"
         if(!state.interaction.diagnostics) {
             val message=if(renderer.cameraFallback) "Camera2: sem rastreamento de mãos" else if(state.handsOn && !state.handValid.any { it }) "Mãos fora de vista · abra a mão para retomar" else ""
-            ui.drawStatus(message,if(workspace.enabled) workspaceInteraction.feedback else "Aponte · pince · solte")
+            ui.drawStatus(message,if(state.fingertipOwned.any { it }) fingertipInteraction.feedback else if(workspace.enabled) workspaceInteraction.feedback else "Aponte · pince · solte")
             return
         }
         var l2 = (tracker?.info() ?: "tracker não iniciado") + " | E:${state.handValid[0]}/${state.handPinch[0]} D:${state.handValid[1]}/${state.handPinch[1]} alvo:${state.hoverKind.joinToString()}"
-        if(workspace.enabled) l2 += " | " + workspaceInteraction.feedback
+        if(workspace.enabled) l2 += " | " + (if(state.fingertipOwned.any { it }) fingertipInteraction.feedback else workspaceInteraction.feedback)
         if (renderer.camErr.isNotEmpty()) l2 += " | ${renderer.camErr}"
         if (renderer.arErr.isNotEmpty()) l2 += " | erro AR: ${renderer.arErr}"
         val sig = l1 + l2
@@ -1656,7 +1671,7 @@ class VrRoomActivity : Activity() {
         var dx: Float
         var dy: Float
         var dz: Float
-        if (s.handAim == 0) {
+        if (s.handAim == 0 || (s.handSource==0 && s.interaction.handMode!=InteractionSettings.PINCH)) {
             dx = px - ex; dy = py - ey; dz = pz - ez
         } else {
             val side = if (i == 0) -1f else 1f
@@ -1703,6 +1718,7 @@ class VrRoomActivity : Activity() {
             s.rox[i] = ox; s.roy[i] = oy; s.roz[i] = oz
             val trig = !padToMoon && (if (i == 0) s.l2 else s.r2) > 0.5f            // no modo gamepad os gatilhos são do jogo (não clicam no laser)
 
+            val indexMode=s.handSource==0 && s.interaction.handMode!=InteractionSettings.PINCH
             var has = false
             var pinch = false
             var closing = false
@@ -1718,13 +1734,15 @@ class VrRoomActivity : Activity() {
                         closing = s.handClosing[i]
                         ratio = s.handRatio[i]
                         val p = s.handInputPts[i]
-                        px = (p[12] + p[24]) * 0.5f      // meio da pinça (pontas do polegar e do indicador)
-                        py = (p[13] + p[25]) * 0.5f
-                        pz = (p[14] + p[26]) * 0.5f
+                        s.fingertipPointing[i]=FingertipPose.extended(p,s.fingertipPointing[i])
+                        px = if(indexMode) p[24] else (p[12] + p[24]) * 0.5f      // meio da pinça (pontas do polegar e do indicador)
+                        py = if(indexMode) p[25] else (p[13] + p[25]) * 0.5f
+                        pz = if(indexMode) p[26] else (p[14] + p[26]) * 0.5f
                     }
                 }
             }
 
+            if(indexMode && trig) has=false // gamepad trigger owns this ray
             var handPressed = false
             if (has && s.handLasers && handAimPoint(i, px, py, pz, hitTmp)) {
                 // estabiliza o cursor: parado = bem suave (tira o tremor); movendo rápido = quase sem atraso
@@ -1741,7 +1759,9 @@ class VrRoomActivity : Activity() {
                     offS[i] = 0f; offZ[i] = 0f
                     hState[i] = 0
                 }
-                when (hState[i]) {
+                if(indexMode) {
+                    hState[i]=0; curS[i]=aimS; curZ[i]=aimZ; offS[i]=0f; offZ[i]=0f
+                } else when (hState[i]) {
                     0 -> {
                         if (pinch) {
                             hState[i] = 2
@@ -1813,14 +1833,14 @@ class VrRoomActivity : Activity() {
                 s.ball[i][1] = s.headY + bdy / bl * hd
                 s.ball[i][2] = s.headZ + bdz / bl * hd
                 s.ballOn[i] = true
-                handPressed = hState[i] == 2
+                handPressed = !indexMode && hState[i] == 2
             } else {
                 hState[i] = 0
                 curInit[i] = false
                 aimFilter[i].reset()
                 dragOn[i] = false
                 offS[i] = 0f; offZ[i] = 0f
-                handPressed = has && pinch
+                handPressed = !indexMode && has && pinch
             }
             s.pressed[i] = trig || handPressed
         }
@@ -1918,11 +1938,9 @@ class VrRoomActivity : Activity() {
 
         // 2) itens sobre a superfície da janela (coordenadas s/z)
         if (kind == Hit.NONE) {
-            val hs = s.handle() * 0.9f
-            if (!s.screenHidden) for (c in 0..3) {                // cantos de redimensionar (aparecem quando você aponta para a tela)
-                if (abs(sA - s.cornerS(c)) < hs && abs(zA - s.cornerZ(c)) < hs) {
-                    kind = Hit.CORNER; idx = c; break
-                }
+            if(!s.screenHidden) {
+                val corner=ScreenControls.cornerAt(s,sA,zA)
+                if(corner>=0) { kind=Hit.CORNER; idx=corner }
             }
             if (kind == Hit.NONE && inRect(s.tb, sA, zA)) {
                 val g = s.tb
@@ -1964,6 +1982,8 @@ class VrRoomActivity : Activity() {
     private val pendingKey=IntArray(2) { -1 }
     private val pendingToolbar=IntArray(2) { -1 }
     private fun interact(i: Int) {
+        if(state.fingertipOwned[i]) return
+        if(state.fingertipTargetId.any { it=="main" }) { prevPressed[i]=state.pressed[i]; return }
         val pressed = state.pressed[i]
         val rising = pressed && !prevPressed[i]
         val falling = !pressed && prevPressed[i]
@@ -2099,9 +2119,31 @@ class VrRoomActivity : Activity() {
     }
     @Volatile var screenSource: ScreenSource? = null
 
-    private fun touchTarget(ev: MotionEvent) {
-        val src = screenSource
-        if (src != null) src.touch(ev) else (tvBox ?: web)?.dispatchTouchEvent(ev)
+    private fun touchTarget(ev: MotionEvent): Boolean {
+        val src=screenSource
+        if(src!=null) { src.touch(ev); return true }
+        return (tvBox ?: web)?.dispatchTouchEvent(ev)==true
+    }
+
+    private fun fingertipClick(i: Int,kind: Int,index: Int,s: Float,z: Float): Boolean {
+        return when(kind) {
+            Hit.KB -> { if(index !in ui.keys.indices) false else { pressKey(index); ui.kbFlash>=0 } }
+            Hit.TB -> { toolbarAction(index); true }
+            Hit.WIN -> {
+                if(touchAny()) return false
+                workspaceDisplays.activeInputId=null
+                val x=SurfaceCoordinates.pixel(s,state.wx,state.win.w,VrState.TEX_W)
+                val y=SurfaceCoordinates.pixel(z,state.wz,state.win.h,VrState.TEX_H,true)
+                val time=SystemClock.uptimeMillis()
+                fun dispatch(action: Int): Boolean {
+                    val event=MotionEvent.obtain(time,SystemClock.uptimeMillis(),action,x,y,0)
+                    event.source=InputDevice.SOURCE_TOUCHSCREEN
+                    return try { touchTarget(event) } finally { event.recycle() }
+                }
+                if(dispatch(MotionEvent.ACTION_DOWN)) dispatch(MotionEvent.ACTION_UP) else false
+            }
+            else -> false
+        }
     }
 
     private fun touchEvent(kind: Int, i: Int) {

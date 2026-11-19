@@ -28,10 +28,11 @@ class WorkspaceInteraction(private val workspace: WorkspaceManager,private val s
         val ev=MotionEvent.obtain(a.started,SystemClock.uptimeMillis(),kind,x,y,0)
         return try { displays.touch(a.screen.id,ev) } finally { ev.recycle() }
     }
+    fun owns(pose: VrState)=actions.any { it?.screen?.pose === pose }
     fun tick() {
         if(!workspace.enabled) return
         val selected=workspace.selected
-        val dual=state.twoHands && state.handValid[0] && state.handValid[1] && state.handPinch[0] && state.handPinch[1] &&
+        val dual=state.interaction.handMode==InteractionSettings.PINCH && state.twoHands && state.handValid[0] && state.handValid[1] && state.handPinch[0] && state.handPinch[1] &&
             selected!=null && !selected.locked && (actions.any { it?.screen?.id == selected.id && it.kind != 0 } || scaleScreen==selected.id)
         if(dual && selected!=null) {
             val left=state.ball[0]; val right=state.ball[1]
@@ -49,9 +50,10 @@ class WorkspaceInteraction(private val workspace: WorkspaceManager,private val s
         }
         if(scaleScreen!=null) { scaleScreen=null; wasDown.fill(true) }
 
-        workspace.hoverId=null
+        if(!state.fingertipOwned.any { it }) workspace.hoverId=null
         for(order in 0..1) {
             val i=if(order==0) state.interaction.dominantHand else 1-state.interaction.dominantHand
+            if(state.fingertipOwned[i]) { wasDown[i]=false; continue }
             val down=state.pressed[i]
             state.surfPoint(state.ax[i],state.az[i],0f,point)
             val ox=state.rox[i]; val oy=state.roy[i]; val oz=state.roz[i]
@@ -66,8 +68,9 @@ class WorkspaceInteraction(private val workspace: WorkspaceManager,private val s
                 for(screen in workspace.screens) {
                     val p=screen.pose; if(!screen.visible) continue
                     if(!p.intersectSurface(ox,oy,oz,dx,dy,dz,hit)) continue
-                    val g=p.win; val margin=p.width*.055f
-                    if(abs(hit[0]-g.cx)>g.w/2+margin || abs(hit[1]-g.cz)>g.h/2+margin) continue
+                    val g=p.win
+                    if(screen.locked && (abs(hit[0]-g.cx)>g.w/2 || abs(hit[1]-g.cz)>g.h/2)) continue
+                    if((abs(hit[0]-g.cx)>g.w/2 || abs(hit[1]-g.cz)>g.h/2) && !ScreenControls.inBar(p,hit[0],hit[1]) && ScreenControls.cornerAt(p,hit[0],hit[1])<0) continue
                     p.surfPoint(hit[0],hit[1],0f,point)
                     val dist=(point[0]-ox).pow(2)+(point[1]-oy).pow(2)+(point[2]-oz).pow(2)
                     if(dist<bestDistance) { best=screen; bestDistance=dist; bs=hit[0]; bz=hit[1] }
@@ -83,7 +86,7 @@ class WorkspaceInteraction(private val workspace: WorkspaceManager,private val s
                     best.pose.surfPoint(bs,bz,.014f,point)
                     state.hitX[i]=point[0]; state.hitY[i]=point[1]; state.hitZ[i]=point[2]
                     if(!down) send(Action(best,0,bs,bz,best.pose.width,0f,0f,SystemClock.uptimeMillis(),false),MotionEvent.ACTION_HOVER_MOVE,bs,bz); state.hoverKind[i]=Hit.NONE; workspace.hoverId=best.id; workspace.hoverS=bs; workspace.hoverZ=bz }
-                val dwellClick=!down && state.dwell && i==state.interaction.dominantHand && dwell[i].update(best?.id,bs,bz,
+                val dwellClick=!down && (state.dwell || state.interaction.handMode==InteractionSettings.DWELL) && i==state.interaction.dominantHand && dwell[i].update(best?.id,bs,bz,
                     SystemClock.uptimeMillis(),state.interaction.dwellMs.toLong(),.025f)
                 state.dwellProgress[i]=dwell[i].progress
                 if(dwellClick && best!=null && actions.none { it?.screen?.id==best?.id }) {
@@ -94,11 +97,11 @@ class WorkspaceInteraction(private val workspace: WorkspaceManager,private val s
                         feedback=if(accepted) "Clique enviado" else "Destino recusou o clique"
                     }
                 }
-                best?.takeIf { down && !wasDown[i] && actions.none { a -> a?.screen?.id==it.id } }?.let { screen ->
+                best?.takeIf { down && !wasDown[i] && actions.none { a -> a?.screen?.id==it.id } && state.fingertipTargetId.none { id -> id==it.id } }?.let { screen ->
                     workspace.selectedId=screen.id
-                    val p=screen.pose; val g=p.win
-                    val corner=abs(bs-g.cx)>g.w*.46f && abs(bz-g.cz)>g.h*.46f && (abs(bs-g.cx)>g.w/2 || abs(bz-g.cz)>g.h/2)
-                    val kind=if(screen.locked) 0 else if(corner) 2 else if(bz>g.cz+g.h/2f) 1 else 0
+                    val p=screen.pose
+                    val corner=ScreenControls.cornerAt(p,bs,bz)>=0
+                    val kind=if(screen.locked) 0 else if(corner) 2 else if(ScreenControls.inBar(p,bs,bz)) 1 else 0
                     action=Action(screen,kind,bs,bz,p.width,p.wx,p.wz,SystemClock.uptimeMillis(),state.handsOn && state.handValid[i])
                     actions[i]=action
                     if(kind==0) {

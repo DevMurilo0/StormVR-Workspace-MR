@@ -75,6 +75,7 @@ class WorkspacePanel(ctx: Context,private val manager: WorkspaceManager,private 
         body.addView(CheckBox(context).apply { text="Duas mãos (maior consumo)"; setTextColor(ink); isChecked=state.twoHands; setOnCheckedChangeListener { _,v -> state.twoHands=v; changed() } })
         val settings=state.interaction
         body.addView(label("Interação VR"))
+        body.addView(HandInteractionControls(context,settings,changed))
         slider("Sensibilidade da pinça",settings.pinchThreshold,.25f,.5f) { settings.pinchThreshold=it }
         slider("Suavização do ponteiro",settings.pointerSmoothing,0f,1f) { settings.pointerSmoothing=it }
         slider("Permanência (segundos)",settings.dwellMs/1000f,.8f,1.2f) { settings.dwellMs=(it*1000).toInt() }
@@ -89,6 +90,6 @@ class WorkspacePanel(ctx: Context,private val manager: WorkspaceManager,private 
         slider("Suavização da pinça",state.pinchSmooth,0f,1f) { state.pinchSmooth=it }
         slider("Escala das mãos",state.handScale,.3f,3f) { state.handScale=it }
         body.addView(CheckBox(context).apply { text="Clique por permanência (mão ou olhar)"; setTextColor(ink); isChecked=state.dwell; setOnCheckedChangeListener { _,v -> state.dwell=v; changed() } })
-        body.addView(label("Pinça: conteúdo · Pinça na barra superior: mover · Pinça no canto: tamanho. Solte para concluir. Use o menu para distância e posição. Mouse e teclado do PC continuam locais ao Linux."))
+        body.addView(label("Indicador: mantenha na barra ou no canto para mover ou redimensionar; dobre para soltar. Pinça clássica disponível nas preferências. Use o menu para distância e posição. Mouse e teclado do PC continuam locais ao Linux."))
     }
 }

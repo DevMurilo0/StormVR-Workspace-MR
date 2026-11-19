@@ -451,6 +451,8 @@ class VrRenderer(
     private var bgPos = 0
     private var bgUvLoc = 0
     private var bgSampler = 0
+    private var bgZoom = 0
+    private var eyeCameraZoom=1f
 
     private val tcIn = floatArrayOf(0.5f, 0.5f, 0.6f, 0.5f, 0.5f, 0.6f)
     private val tcOut = FloatArray(6)
@@ -708,6 +710,7 @@ class VrRenderer(
         bgPos = GLES20.glGetAttribLocation(bgProg, "aPos")
         bgUvLoc = GLES20.glGetAttribLocation(bgProg, "aUV")
         bgSampler = GLES20.glGetUniformLocation(bgProg, "uTexture")
+        bgZoom = GLES20.glGetUniformLocation(bgProg, "uZoom")
         bgReady = false
 
         handProg = program(HAND_VS, HAND_FS)
@@ -936,6 +939,8 @@ class VrRenderer(
             drawFullscreen(); return
         }
         updateHead()
+        // Snapshot once: both eyes use identical crop even if preferences change on the UI thread.
+        eyeCameraZoom=CameraZoom.effective(st.interaction.cameraZoom,st.passthrough && bgReady,st.fullscreen)
 
         // com distorção de lente ligada os olhos vão para um alvo fora da tela e depois passam pelo shader da lente
         val lens = st.stereo && lensFbo != 0 && (st.k1 > 0.005f || st.k2 > 0.005f)
@@ -1099,6 +1104,7 @@ class VrRenderer(
         GLES20.glViewport(x, y, w, h)
         if (st.passthrough && bgReady && !cameraFallback) System.arraycopy(arProj, 0, proj, 0, 16)
         else Matrix.perspectiveM(proj, 0, fov, w.toFloat() / h, 0.05f, 60f)
+        CameraZoom.applyProjection(proj,eyeCameraZoom)
         Matrix.setIdentityM(tr, 0)
         tr[12] = shift
         Matrix.multiplyMM(eyeView, 0, tr, 0, view, 0)
@@ -1115,6 +1121,7 @@ class VrRenderer(
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, if(cameraFallback) fallbackTexId else arTexId)
         GLES20.glUniform1i(bgSampler, 0)
+        GLES20.glUniform1f(bgZoom,eyeCameraZoom)
         GLES20.glEnableVertexAttribArray(bgPos)
         GLES20.glEnableVertexAttribArray(bgUvLoc)
         bgPosBuf.position(0)
@@ -1357,10 +1364,11 @@ class VrRenderer(
             }
             // bolinha = cursor: o objeto que ela cobre (visto do seu olho) é o selecionado
             if (st.handLasers) {
-                // a bolinha fica SEMPRE no meio da pinça real (mesmos dados que desenham os dedos)
-                val tx = (p[12] + p[24]) / 2
-                val ty = (p[13] + p[25]) / 2
-                val tz = (p[14] + p[26]) / 2
+                // Indicator mode follows landmark 8; classic mode keeps the pinch midpoint.
+                val index=st.handSource==0 && st.interaction.handMode!=InteractionSettings.PINCH
+                val tx = if(index) p[24] else (p[12] + p[24]) / 2
+                val ty = if(index) p[25] else (p[13] + p[25]) / 2
+                val tz = if(index) p[26] else (p[14] + p[26]) / 2
                 // suavização da bolinha (barra "Suavização da bolinha"): 0 = cola no meio dos dedos; 1 = bem suave
                 val bnow = System.nanoTime()
                 val bdt = if (lastBallNs == 0L || bnow - lastBallNs > 200_000_000L) 0.016f else ((bnow - lastBallNs) / 1e9f).coerceIn(0.001f, 0.1f)
@@ -1420,7 +1428,10 @@ class VrRenderer(
             if(screen.id == ws.hoverId || screen.id == ws.selectedId) GLES20.glUniform4f(surfColor.uColor,.18f,.75f,.88f,ws.uiOpacity)
             else GLES20.glUniform4f(surfColor.uColor,.035f,.065f,.09f,ws.uiOpacity)
             drawSurf(surfColor,g.cx,g.cz,g.w+.045f,g.h+.045f,-.012f,p)
-            drawSurf(surfColor,g.cx,g.cz+g.h/2f+.05f,g.w,.075f,0f,p)
+            if(!screen.locked) {
+                drawSurf(surfColor,p.bar.cx,p.bar.cz,p.bar.w,p.bar.h,.006f,p)
+                for(c in 0..3) drawSurf(surfColor,p.cornerS(c),p.cornerZ(c),p.handle()*2,p.handle()*2,.008f,p)
+            }
             GLES20.glUseProgram(surfExt.p)
             GLES20.glUniformMatrix4fv(surfExt.uTex,1,false,t.matrix,0)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -1429,7 +1440,12 @@ class VrRenderer(
             drawSurf(surfExt,g.cx,g.cz,g.w,g.h,0f,p)
             if(ws.hoverId==screen.id) {
                 GLES20.glUseProgram(surfColor.p)
-                GLES20.glUniform4f(surfColor.uColor,.65f,.96f,1f,.95f)
+                val owner=st.fingertipTargetId.indexOf(screen.id)
+                val phase=if(owner>=0) st.fingertipPhase[owner] else FingertipGesture.Phase.HOVER
+                if(phase==FingertipGesture.Phase.RESIZING) GLES20.glUniform4f(surfColor.uColor,1f,.65f,.2f,1f)
+                else if(phase==FingertipGesture.Phase.DRAGGING) GLES20.glUniform4f(surfColor.uColor,.25f,1f,.7f,1f)
+                else if(st.clickSentAt.any { SystemClock.uptimeMillis()-it in 0L..160L }) GLES20.glUniform4f(surfColor.uColor,.25f,1f,.4f,1f)
+                else GLES20.glUniform4f(surfColor.uColor,.65f,.96f,1f,.95f)
                 val cursor=p.width*.009f
                 drawSurf(surfColor,ws.hoverS,ws.hoverZ,cursor,cursor,.014f,p)
                 drawDwell(ws.hoverS,ws.hoverZ,p,stateProgress())
@@ -1485,16 +1501,12 @@ class VrRenderer(
         // cantos (estilo Quest: dois traços em L, só aparecem quando você aponta para a tela) + barra de mover
         GLES20.glUseProgram(surfColor.p)
         val hs = st.handle()
-        val near = !hidden && (ui.menuOpen || st.hoverKind[0] == Hit.WIN || st.hoverKind[1] == Hit.WIN || st.hoverKind[0] == Hit.CORNER ||
+        val near = !hidden && ((st.handsOn && st.interaction.handMode==InteractionSettings.INDICATOR) || ui.menuOpen || st.hoverKind[0] == Hit.WIN || st.hoverKind[1] == Hit.WIN || st.hoverKind[0] == Hit.CORNER ||
             st.hoverKind[1] == Hit.CORNER || st.hoverKind[0] == Hit.BAR || st.hoverKind[1] == Hit.BAR)
         if (near) for (c in 0..3) {
             val hot = (st.hoverKind[0] == Hit.CORNER && st.hoverIdx[0] == c) || (st.hoverKind[1] == Hit.CORNER && st.hoverIdx[1] == c)
             GLES20.glUniform4fv(surfColor.uColor, 1, if (hot) cHandleHot else cHandle, 0)
-            val sx = if (c % 2 == 0) -1f else 1f; val sz = if (c < 2) 1f else -1f
-            val cs = g.cx + sx * (g.w / 2f); val cz = g.cz + sz * (g.h / 2f)
-            val t = hs * (if (hot) 0.42f else 0.30f); val l = hs * 1.7f
-            drawSurf(surfColor, cs + sx * (t - l) / 2f, cz + sz * t / 2f, l + t, t, 0.006f)           // braço horizontal do "L"
-            drawSurf(surfColor, cs + sx * t / 2f, cz + sz * (t - l) / 2f, t, l + t, 0.006f)           // braço vertical do "L"
+            drawSurf(surfColor,st.cornerS(c),st.cornerZ(c),hs*2,hs*2,.008f)
         }
         if (!hidden) {
             val b = st.bar
@@ -1515,7 +1527,7 @@ class VrRenderer(
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ui.status.texId)
             val sw = minOf(st.win.w, 3.2f)
             val sh = sw * 120f / 1400f
-            drawSurf(surfUi, st.wx, st.win.cz + st.win.h / 2f + sh / 2f + 0.05f, sw, sh, 0.002f)
+            drawSurf(surfUi, st.wx, st.bar.cz + st.bar.h/2f + sh/2f + 0.05f, sw, sh, 0.002f)
         }
     }
 
@@ -1542,7 +1554,11 @@ class VrRenderer(
             val ty = st.hitY[i]
             val tz = st.hitZ[i]
 
-            val color = if (pressed) cPressed else if (left) cLaserL else cLaserR
+            val phase=st.fingertipPhase[i]
+            val color = if(SystemClock.uptimeMillis()-st.clickSentAt[i] in 0L..160L) cPinch
+                else if(pressed || phase==FingertipGesture.Phase.DRAGGING || phase==FingertipGesture.Phase.RESIZING || phase==FingertipGesture.Phase.ARMED) cPressed
+                else if(st.fingertipOwned[i] && !st.fingertipPointing[i]) cWand
+                else if (left) cLaserL else cLaserR
             if (!st.laserHand[i]) drawBeam(ox, oy, oz, tx, ty, tz, if (pressed) 0.012f else 0.006f, color)
 
             if (!st.laserHand[i]) {
@@ -1558,7 +1574,7 @@ class VrRenderer(
                 val kr = st.kbRot
                 basis(kr[0], kr[3], kr[6], kr[2], kr[5], kr[8], -kr[1], -kr[4], -kr[7], tx + kr[1] * 0.01f, ty + kr[4] * 0.01f, tz + kr[7] * 0.01f, ds * 0.6f, ds * 0.6f)
                 quadRoom(color, 8f, 1f, 1f)
-            } else {
+            } else if(!(workspace?.enabled==true && st.hoverKind[i]==Hit.NONE && workspace?.hoverId!=null)) {
                 // ponto sobre a superfície (curva ou plana)
                 GLES20.glUseProgram(surfColor.p)
                 GLES20.glUniform4fv(surfColor.uColor, 1, color, 0)
@@ -1919,10 +1935,11 @@ class VrRenderer(
         private const val BG_VS = """
             attribute vec2 aPos;
             attribute vec2 aUV;
+            uniform float uZoom;
             varying vec2 vUV;
             void main() {
                 vUV = aUV;
-                gl_Position = vec4(aPos, 0.0, 1.0);
+                gl_Position = vec4(aPos * uZoom, 0.0, 1.0);
             }
         """
         private const val BG_FS = """

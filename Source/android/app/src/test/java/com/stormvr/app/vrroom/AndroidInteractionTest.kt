@@ -71,4 +71,118 @@ class AndroidInteractionTest {
         actions.clear(); dispatch(true,true,true,10f); dispatch(true,false,false,999f)
         assertEquals(listOf(MotionEvent.ACTION_DOWN,MotionEvent.ACTION_CANCEL),actions)
     }
+    @Test fun interactionModeAndZoomPersistAndRestoreDefaults() {
+        val activity=Robolectric.buildActivity(Activity::class.java).setup().get()
+        val prefs=activity.getSharedPreferences("finger-zoom-test",0)
+        for(mode in 0..2) {
+            InteractionSettings().apply { handMode=mode; dragActivationMs=750; fingertipSensitivity=.7f; cameraZoom=1.8f }.save(prefs)
+            val loaded=InteractionSettings().apply { load(prefs) }
+            assertEquals(mode,loaded.handMode); assertEquals(750,loaded.dragActivationMs)
+            assertEquals(.7f,loaded.fingertipSensitivity,0f); assertEquals(1.8f,loaded.cameraZoom,0f)
+        }
+        prefs.edit().clear().commit()
+        val defaults=InteractionSettings().apply { load(prefs) }
+        assertEquals(InteractionSettings.INDICATOR,defaults.handMode)
+        assertEquals(600,defaults.dragActivationMs); assertEquals(1f,defaults.cameraZoom,0f)
+    }
+    @Test fun cameraControlsEnableOnlyWithCameraAndDoNotChangeBrowserOrLensFov() {
+        val activity=Robolectric.buildActivity(Activity::class.java).setup().get()
+        val state=VrState()
+        val web=android.webkit.WebView(activity).apply { settings.textZoom=125 }
+        val fov=state.fovDeg
+        val controls=CameraZoomControls(activity,state) {}
+        fun buttons(view: android.view.View): List<android.widget.Button> =
+            if(view is android.view.ViewGroup) (0 until view.childCount).flatMap { buttons(view.getChildAt(it)) }
+            else if(view is android.widget.Button) listOf(view) else emptyList()
+        val plus=buttons(controls).first { it.text=="+" }
+        assertFalse(plus.isEnabled)
+        state.passthrough=true; controls.refresh(); assertTrue(plus.isEnabled)
+        plus.performClick(); assertEquals(1.1f,state.interaction.cameraZoom,.001f)
+        repeat(30) { plus.performClick() }; assertEquals(2f,state.interaction.cameraZoom,0f)
+        assertEquals(fov,state.fovDeg,0f); assertEquals(125,web.settings.textZoom)
+        buttons(controls).first { it.text=="Restaurar 1.0x" }.performClick()
+        assertEquals(1f,state.interaction.cameraZoom,0f)
+        state.fullscreen=true; controls.refresh(); assertFalse(plus.isEnabled)
+        web.destroy()
+    }
+    @Test fun indicatorCaptureDoesNotUsePinchAndGamepadRetainsOwnership() {
+        val activity=Robolectric.buildActivity(Activity::class.java).setup().get()
+        val s=VrState().apply { handsOn=true; handLasers=true; curved=false; updateGeom() }
+        val ws=WorkspaceManager(activity,s)
+        val displays=WorkspaceDisplays(activity)
+        val legacy=WorkspaceInteraction(ws,s,displays)
+        var clicks=0
+        val finger=FingertipInteraction(s,ws,displays,legacy) { _,_,_,_,_ -> clicks++; true }
+        val i=1; val point=FloatArray(3)
+        fun aim() {
+            s.laserHand[i]=true; s.handValid[i]=true; s.handObserved[i]=true; s.fingertipPointing[i]=true
+            s.ax[i]=s.bar.cx; s.az[i]=s.bar.cz; s.hoverKind[i]=Hit.BAR
+            s.surfPoint(s.ax[i],s.az[i],0f,point); s.hitX[i]=point[0]; s.hitY[i]=point[1]; s.hitZ[i]=point[2]
+        }
+        aim(); finger.tick(0); aim(); finger.tick(600)
+        assertEquals(FingertipGesture.Phase.DRAGGING,s.fingertipPhase[i]); assertEquals(0,clicks)
+        assertFalse(s.pressed[i]); assertFalse(s.handPinch[i])
+        s.r2=1f; s.pressed[i]=true; finger.tick(620)
+        assertFalse(s.fingertipOwned[i]); assertTrue(s.pressed[i])
+        s.r2=0f; s.interaction.handMode=InteractionSettings.PINCH; s.pressed[i]=true; finger.tick(700)
+        assertFalse(s.fingertipOwned[i]); assertTrue(s.pressed[i])
+    }
+    @Test fun nearestScreenReceivesFingerHoverAndLockedFramesCannotBeGrabbed() {
+        val activity=Robolectric.buildActivity(Activity::class.java).setup().get()
+        val s=VrState().apply { handsOn=true; curved=false; updateGeom() }
+        val ws=WorkspaceManager(activity,s).apply { enabled=true }
+        val extra=ws.add().apply { pose.apply { curved=false; scrAz=0f; wx=0f; wz=s.wz; distance=2f; updateGeom() } }
+        val displays=WorkspaceDisplays(activity)
+        val finger=FingertipInteraction(s,ws,displays,WorkspaceInteraction(ws,s,displays)) { _,_,_,_,_ -> true }
+        s.laserHand[1]=true; s.handValid[1]=true; s.handObserved[1]=true; s.fingertipPointing[1]=true
+        s.ax[1]=s.wx; s.az[1]=s.wz; s.hoverKind[1]=Hit.WIN
+        val point=FloatArray(3); s.surfPoint(s.wx,s.wz,0f,point)
+        s.hitX[1]=point[0]; s.hitY[1]=point[1]; s.hitZ[1]=point[2]
+        finger.tick(0); assertEquals(extra.id,ws.hoverId)
+        finger.cancel(); extra.locked=true
+        val scale=s.distance/extra.pose.distance
+        s.ax[1]=extra.pose.bar.cx*scale; s.az[1]=extra.pose.bar.cz*scale
+        s.hoverKind[1]=Hit.NONE
+        finger.tick(100); finger.tick(800)
+        assertNotEquals(FingertipGesture.Phase.DRAGGING,s.fingertipPhase[1])
+    }
+
+    @Test fun twoIndicatorsOnSameContentProduceOnlyOneClick() {
+        val activity=Robolectric.buildActivity(Activity::class.java).setup().get()
+        val s=VrState().apply { handsOn=true; curved=false; updateGeom() }
+        val ws=WorkspaceManager(activity,s); val displays=WorkspaceDisplays(activity)
+        var count=0
+        val finger=FingertipInteraction(s,ws,displays,WorkspaceInteraction(ws,s,displays)) { _,_,_,_,_ -> count++; true }
+        val point=FloatArray(3); s.surfPoint(s.wx,s.wz,0f,point)
+        for(i in 0..1) {
+            s.laserHand[i]=true; s.handValid[i]=true; s.handObserved[i]=true; s.fingertipPointing[i]=true
+            s.ax[i]=s.wx; s.az[i]=s.wz; s.hoverKind[i]=Hit.WIN
+            s.hitX[i]=point[0]; s.hitY[i]=point[1]; s.hitZ[i]=point[2]
+        }
+        finger.tick(0); finger.tick(1000); finger.tick(2100)
+        assertEquals(1,count)
+    }
+
+    @Test fun unavailableFrontSurfaceStillOccludesOtherWindows() {
+        val activity=Robolectric.buildActivity(Activity::class.java).setup().get()
+        for(extraDepth in listOf(2f,4f)) {
+            val s=VrState().apply { handsOn=true; curved=false; updateGeom() }
+            val ws=WorkspaceManager(activity,s).apply { enabled=true }
+            val extra=ws.add().apply { pose.apply { curved=false; scrAz=0f; wx=0f; wz=s.wz; distance=extraDepth; updateGeom() } }
+            val displays=WorkspaceDisplays(activity)
+            var primaryClicks=0
+            val finger=FingertipInteraction(s,ws,displays,WorkspaceInteraction(ws,s,displays)) { _,_,_,_,_ -> primaryClicks++; true }
+            val point=FloatArray(3); s.surfPoint(s.wx,s.wz,0f,point)
+            fun aim() { for(i in 0..1) {
+                s.laserHand[i]=true; s.handValid[i]=true; s.handObserved[i]=true; s.fingertipPointing[i]=true
+                s.ax[i]=s.wx; s.az[i]=s.wz; s.hoverKind[i]=Hit.WIN
+                s.hitX[i]=point[0]; s.hitY[i]=point[1]; s.hitZ[i]=point[2]
+            } }
+            aim(); finger.tick(0)
+            assertEquals(if(extraDepth<3f) extra.id else null,ws.hoverId)
+            aim(); finger.tick(1000)
+            assertEquals(if(extraDepth<3f) 0 else 1,primaryClicks)
+        }
+    }
+
 }

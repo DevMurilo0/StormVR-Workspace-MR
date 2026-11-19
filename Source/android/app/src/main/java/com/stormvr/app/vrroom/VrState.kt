@@ -85,6 +85,10 @@ class VrState {
     @Volatile var pcSendPinch = true  // enviar a PINÇA (o driver a usa como trigger)
     @Volatile var fullscreen = false  // tela cheia: só a página/stream ocupando o celular inteiro, com toque direto
     @Volatile var fsFill = false      // tela cheia: esticar até as bordas (senão mantém a proporção 16:9)
+    val fingertipOwned=BooleanArray(2)
+    val fingertipTargetId=arrayOfNulls<String>(2)
+    val fingertipPhase=Array(2) { FingertipGesture.Phase.IDLE }
+    val fingertipPointing=BooleanArray(2)
     val inputCaptured=BooleanArray(2)
     val dwellProgress=FloatArray(2)
     val clickSentAt=LongArray(2)
@@ -193,9 +197,9 @@ class VrState {
 
     init { updateGeom() }
 
-    fun handle() = width * 0.045f
-    fun cornerS(i: Int) = wx + (if (i % 2 == 0) -1f else 1f) * (win.w / 2f + handle() * 0.35f)
-    fun cornerZ(i: Int) = win.cz + (if (i < 2) 1f else -1f) * (win.h / 2f + handle() * 0.35f)
+    fun handle() = maxOf(.09f,width * 0.055f)
+    fun cornerS(i: Int) = wx + (if (i % 2 == 0) -1f else 1f) * (win.w / 2f + handle() * 1.05f)
+    fun cornerZ(i: Int) = win.cz + (if (i < 2) 1f else -1f) * (win.h / 2f + handle() * 1.05f)
 
     /** Curvatura K = 1/R (0 = plano). */
     @Volatile var workspaceCurve = 1f
@@ -328,8 +332,7 @@ class VrState {
         val tbH = w * TB_H / TB_W
         val gap = w * 0.012f
         tb.set(wx, distance, wz - h / 2f - gap - tbH / 2f, w, tbH)
-        val barH = w * 0.022f
-        bar.set(wx, distance, tb.cz - tbH / 2f - gap - barH / 2f, w * 0.25f, barH)
+        bar.set(wx, distance, wz + h/2f + handle()*1.4f, w*.78f, handle()*1.1f)
         val ky = (distance - 0.8f).coerceAtLeast(1.0f)
         var kx: Float; var kyy: Float; var kz: Float; var kw: Float
         var px = 0f; var py = 0f; var pz = 0f                                    // pivô da órbita
