@@ -105,4 +105,17 @@ class SpatialDualGestureTest {
         for(t in 600L..2100L step 100) assertFalse(frame(g,t))
     }
 
+    @Test fun separateDeliberatePinchesCanRepeatWithoutASecondDwell() {
+        val g=SpatialGesture()
+        frame(g,0)
+        frame(g,100,pinch=true)
+        assertTrue(frame(g,180,pinch=true))
+        assertFalse(frame(g,200,pinch=true))
+        frame(g,250); frame(g,330); frame(g,400)
+        frame(g,500,pinch=true)
+        assertTrue(frame(g,580,pinch=true))
+        assertFalse(frame(g,600,pinch=true))
+        for(t in 700L..2100L step 100) assertFalse(frame(g,t))
+    }
+
 }

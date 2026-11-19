@@ -14,6 +14,7 @@ class SpatialGesture {
     private var x=0f; private var y=0f
     private var cancelledClick=false
     private var clickFired=false
+    private var confirmationWasDwell=false
     private var hoverSince=-1L
     private var dwellX=0f; private var dwellY=0f
     private var dwellCaptured=false
@@ -25,7 +26,7 @@ class SpatialGesture {
     fun reset() {
         phase=FingertipGesture.Phase.IDLE; target=null; armed=false; downSince=-1
         openSince=-1; lastSeen=-1; hoverSince=-1; dwellCaptured=false; dwellLatchedId=null
-        notPointingSince=-1; progress=0f
+        notPointingSince=-1; progress=0f; confirmationWasDwell=false
     }
     fun release() {
         phase=FingertipGesture.Phase.RELEASED; armed=false; downSince=-1
@@ -65,12 +66,13 @@ class SpatialGesture {
                     // Legacy spatial tests/mode continue to click on release.
                     val click=kind==FingertipGesture.Kind.CLICK && !clickFired && !cancelledClick &&
                         now-downSince in 80..500
+                    if(click) confirmationWasDwell=false
                     release(); return click
                 }
             } else openSince=-1
             if(allowDwell && grip && kind==FingertipGesture.Kind.CLICK &&
                 !clickFired && !cancelledClick && now-downSince>=80) {
-                clickFired=true
+                clickFired=true; confirmationWasDwell=false
                 return true // pinch is Enter, once; holding the fingers together never repeats
             }
             if(grip && now-downSince>=80 && !captured && kind!=FingertipGesture.Kind.CLICK) {
@@ -79,8 +81,8 @@ class SpatialGesture {
             return false
         }
         if(grip) {
-            // Pinch and dwell confirm the same pointing session only once, in either order.
-            if(allowDwell && id!=null && dwellLatchedId==id && kind==FingertipGesture.Kind.CLICK) {
+            // A dwell confirmation cannot be repeated by a following pinch in the same hover.
+            if(allowDwell && confirmationWasDwell && id!=null && dwellLatchedId==id && kind==FingertipGesture.Kind.CLICK) {
                 phase=FingertipGesture.Phase.RELEASED; progress=0f
                 return false
             }
@@ -97,7 +99,7 @@ class SpatialGesture {
                 if(now-notPointingSince<120) return false
             }
             armed=false; target=null; hoverSince=-1; notPointingSince=-1
-            dwellLatchedId=null; progress=0f; phase=FingertipGesture.Phase.IDLE
+            dwellLatchedId=null; confirmationWasDwell=false; progress=0f; phase=FingertipGesture.Phase.IDLE
             return false
         }
         notPointingSince=-1
@@ -105,7 +107,7 @@ class SpatialGesture {
         if(moved || !armed) {
             target=id; kind=action; x=px; y=py; armed=true
             hoverSince=now; progress=0f
-            if(moved) dwellLatchedId=null
+            if(moved) { dwellLatchedId=null; confirmationWasDwell=false }
             phase=FingertipGesture.Phase.HOVER
             return false
         }
@@ -117,6 +119,7 @@ class SpatialGesture {
             if(now-hoverSince>=duration) {
                 progress=0f; dwellLatchedId=id
                 if(kind==FingertipGesture.Kind.CLICK) {
+                    confirmationWasDwell=true
                     phase=FingertipGesture.Phase.RELEASED
                     return true // Enter exactly once per stable pointing session
                 }
