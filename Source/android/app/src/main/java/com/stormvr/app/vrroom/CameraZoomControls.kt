@@ -34,7 +34,7 @@ class CameraZoomControls(context: Context,private val state: VrState,private val
         val supported=state.passthrough && !state.fullscreen
         value.text=String.format(Locale.ROOT,"%.1fx",zoom)
         slider.progress=((zoom-CameraZoom.MIN)*100).toInt().coerceIn(0,slider.max)
-        slider.isEnabled=supported; minus.isEnabled=supported && zoom>1f; plus.isEnabled=supported && zoom<2f; reset.isEnabled=supported
+        slider.isEnabled=supported; minus.isEnabled=supported && zoom>CameraZoom.MIN; plus.isEnabled=supported && zoom<CameraZoom.MAX; reset.isEnabled=supported
         note.text=if(supported) "0.4x–0.9x: afastamento VISUAL, com bordas vazias (não amplia o campo capturado pela lente). 1.0x–2.0x: zoom digital. A cena 3D acompanha a imagem; o reconhecimento de mãos usa a imagem original. Não altera WebView ou FOV."
             else "Ative Modo câmera para ajustar. Sem passthrough ou em tela cheia, o zoom da câmera não é aplicado."
     }

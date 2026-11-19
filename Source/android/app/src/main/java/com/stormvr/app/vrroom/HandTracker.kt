@@ -739,7 +739,8 @@ class HandTracker(
                 FloatArray(63) { c -> val l=wl[c/3]; when(c%3) { 0->l.x();1->l.y();else->l.z() } },
                 ow,oh,fx,fy,cx,cy,st.interaction.palmWidthMm/1000f*st.handScale,
                 if(mode==2) j.rawDepth else null,j.tsNs,j.rot) else null
-            if(mode>0 && estimate==null) continue
+            // Spatial depth is advisory: a rejected 3D estimate must NOT discard a valid MediaPipe hand.
+            // The legacy monocular reprojection below keeps input and rendering continuous.
             val zc=estimate?.distance ?: legacyZ
             val out = FloatArray(63)
             var bx0 = 1f; var by0 = 1f; var bx1 = 0f; var by1 = 0f
@@ -845,7 +846,8 @@ class HandTracker(
             val spatial = d.estimate?.let { spatialEngine.sample(h,d.pts,it,sampleNs) }?.let {
                 if(j.sensorPose) it else it.copy(depthReliable=false)
             }
-            if(mode>0 && spatial==null) continue
+            // A rejected spatial velocity/confidence sample only disables uncertain depth gestures.
+            // Never blink the entire hand: the already validated landmarks still feed the UI.
             spatialSamples[h]=spatial
             seen[h] = true
             lastSeenNs[h] = sampleNs

@@ -21,9 +21,10 @@ class FingertipGesture {
     fun release(now: Long) { spatial.release(); phase=Phase.RELEASED; since=now; progress=0f }
 
     fun updateSpatial(id: String?,action: Kind,px: Float,py: Float,observed: Boolean,
-                      pointing: Boolean,grip: Boolean,blocked: Boolean,now: Long,tolerance: Float): Boolean {
-        val click=spatial.update(id,action,px,py,observed,pointing,grip,blocked,now,tolerance)
-        phase=spatial.phase; target=spatial.target; progress=0f
+                      pointing: Boolean,grip: Boolean,blocked: Boolean,now: Long,tolerance: Float,
+                      dwellMs: Long=1000L): Boolean {
+        val click=spatial.update(id,action,px,py,observed,pointing,grip,blocked,now,tolerance,true,dwellMs)
+        phase=spatial.phase; target=spatial.target; progress=spatial.progress
         return click
     }
 

@@ -11,7 +11,7 @@ class HandInteractionControls(context: Context,settings: InteractionSettings,cha
         fun label(value: String)=TextView(context).apply { text=value; textSize=20f; setTextColor(Color.WHITE); setPadding(8,12,8,8) }
         addView(label("Modo de interação das mãos"))
         val modes=RadioGroup(context)
-        listOf("Indicador (recomendado)","Pinça (clássico)","Permanência","Espacial (experimental)").forEachIndexed { i,name ->
+        listOf("Indicador + pinça (recomendado)","Pinça (clássico)","Permanência + pinça","Espacial + pinça e permanência").forEachIndexed { i,name ->
             modes.addView(RadioButton(context).apply { id=100+i; text=name; textSize=18f; setTextColor(Color.WHITE); minHeight=(52*resources.displayMetrics.density).toInt(); contentDescription=name })
         }
         modes.check(100+settings.handMode)
@@ -41,18 +41,18 @@ class HandInteractionControls(context: Context,settings: InteractionSettings,cha
                 override fun onStopTrackingTouch(bar: SeekBar?) {}
             })
         })
-        addView(label("Meça entre as bases do indicador e do mínimo com a mão aberta. A escala continua aproximada. Raw Depth exige suporte e amostras recentes; sem elas, usa monocular. No modo Espacial: aponte, faça uma pinça breve para clicar; feche sobre a barra ou canto para capturar e abra para soltar. Puxar/empurrar exige profundidade confiável.").apply { textSize=16f })
+        addView(label("Meça entre as bases do indicador e do mínimo com a mão aberta. A escala continua aproximada. Raw Depth exige suporte e amostras recentes; sem elas, usa monocular. Gestos: aponte e junte polegar + indicador para confirmar; mantenha a pinça na barra/canto para mover ou redimensionar e abra para soltar. Alternativa: indicador estável por pelo menos 1 segundo ativa clique ou arraste; dobre o dedo para encerrar o arraste. Puxar/empurrar exige profundidade confiável.").apply { textSize=16f })
         addView(Switch(context).apply {
             text="Diagnóstico espacial"; textSize=18f; setTextColor(Color.WHITE); isChecked=settings.diagnostics
             minHeight=(52*resources.displayMetrics.density).toInt()
             setOnCheckedChangeListener { _,value -> settings.diagnostics=value; changed() }
         })
-        val time=label("Ativar arraste: ${settings.dragActivationMs} ms")
+        val time=label("Indicador parado (Enter / mover): ${maxOf(1000,settings.dwellMs)} ms")
         addView(time)
         addView(SeekBar(context).apply {
-            contentDescription="Tempo de ativação do arraste"; max=900; progress=settings.dragActivationMs-300
+            contentDescription="Tempo do indicador parado"; max=1500; progress=(settings.dwellMs-1000).coerceIn(0,1500)
             setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(bar: SeekBar?,value: Int,user: Boolean) { if(user) { settings.dragActivationMs=300+value; time.text="Ativar arraste: ${settings.dragActivationMs} ms"; changed() } }
+                override fun onProgressChanged(bar: SeekBar?,value: Int,user: Boolean) { if(user) { settings.dwellMs=1000+value; time.text="Indicador parado (Enter / mover): ${settings.dwellMs} ms"; changed() } }
                 override fun onStartTrackingTouch(bar: SeekBar?) {}
                 override fun onStopTrackingTouch(bar: SeekBar?) {}
             })
@@ -66,6 +66,6 @@ class HandInteractionControls(context: Context,settings: InteractionSettings,cha
                 override fun onStopTrackingTouch(bar: SeekBar?) {}
             })
         })
-        addView(label("Indicador: mantenha na barra superior ou no canto até ativar. Depois mova a mão; dobre o indicador para soltar. Botões e teclas usam um único clique por permanência. Permanência seleciona conteúdo; para mover telas, escolha Indicador ou Pinça.").apply { textSize=16f })
+        addView(label("Indicador e pinça funcionam juntos: pinça breve = Enter; pinça segurada na barra/canto = pegar e mover/redimensionar. Sem pinçar, aponte por 1 segundo para clicar ou capturar a tela; dobre o indicador para soltar. Para usar apenas a pinça antiga, escolha Pinça (clássico).").apply { textSize=16f })
     }
 }

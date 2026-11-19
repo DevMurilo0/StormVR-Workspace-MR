@@ -30,7 +30,7 @@ class InteractionSettings {
         cameraZoom=CameraZoom.clamp(p.getFloat("cameraZoom",1f))
         pinchThreshold=p.getFloat("pinch",.38f).coerceIn(.25f,.5f)
         pointerSmoothing=p.getFloat("pointer",.5f).coerceIn(0f,1f)
-        dwellMs=p.getInt("dwellMs",1000).coerceIn(800,1200)
+        dwellMs=p.getInt("dwellMs",1000).coerceIn(1000,2500)
         dominantHand=p.getInt("dominant",1).coerceIn(0,1)
         confirmImportant=p.getBoolean("confirm",true)
         handStyle=p.getInt("style",0).coerceIn(0,2)

@@ -78,7 +78,7 @@ class WorkspacePanel(ctx: Context,private val manager: WorkspaceManager,private 
         body.addView(HandInteractionControls(context,settings,changed))
         slider("Sensibilidade da pinça",settings.pinchThreshold,.25f,.5f) { settings.pinchThreshold=it }
         slider("Suavização do ponteiro",settings.pointerSmoothing,0f,1f) { settings.pointerSmoothing=it }
-        slider("Permanência (segundos)",settings.dwellMs/1000f,.8f,1.2f) { settings.dwellMs=(it*1000).toInt() }
+        slider("Permanência (segundos)",settings.dwellMs/1000f,1f,2.5f) { settings.dwellMs=(it*1000).toInt() }
         body.addView(button("Mão dominante: ${if(settings.dominantHand==1) "direita" else "esquerda"}") { settings.dominantHand=1-settings.dominantHand; changed(); refresh() })
         body.addView(button("Visual das mãos: ${listOf("completas","simplificadas","ponteiros")[settings.handStyle]}") { settings.handStyle=(settings.handStyle+1)%3; changed(); refresh() })
         slider("Tamanho do teclado",settings.keyboardScale,.7f,1.8f) { settings.keyboardScale=it }

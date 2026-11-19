@@ -23,7 +23,7 @@ class AndroidInteractionTest {
         val s=InteractionSettings().apply { handStyle=2; keyboardScale=1.5f; dwellMs=900; dominantHand=0; pinchThreshold=.3f; diagnostics=true }
         s.save(prefs)
         val loaded=InteractionSettings(); loaded.load(prefs)
-        assertEquals(2,loaded.handStyle); assertEquals(900,loaded.dwellMs); assertEquals(0,loaded.dominantHand)
+        assertEquals(2,loaded.handStyle); assertEquals(1000,loaded.dwellMs); assertEquals(0,loaded.dominantHand)
         assertEquals(.3f,loaded.pinchThreshold,0f); assertEquals(1.5f,loaded.keyboardScale,0f); assertTrue(loaded.diagnostics)
         prefs.edit().clear().commit(); loaded.load(prefs)
         assertEquals(1000,loaded.dwellMs); assertEquals(1,loaded.dominantHand); assertEquals(0,loaded.handStyle)
@@ -102,7 +102,13 @@ class AndroidInteractionTest {
         assertEquals(fov,state.fovDeg,0f); assertEquals(125,web.settings.textZoom)
         buttons(controls).first { it.text=="Restaurar 1.0x" }.performClick()
         assertEquals(1f,state.interaction.cameraZoom,0f)
-        state.fullscreen=true; controls.refresh(); assertFalse(plus.isEnabled)
+        val minus=buttons(controls).first { it.text=="−" }
+        assertTrue(minus.isEnabled)
+        repeat(30) { minus.performClick() }
+        assertEquals(.4f,state.interaction.cameraZoom,0f)
+        assertFalse(minus.isEnabled); assertTrue(plus.isEnabled)
+        assertEquals(fov,state.fovDeg,0f); assertEquals(125,web.settings.textZoom)
+        state.fullscreen=true; controls.refresh(); assertFalse(plus.isEnabled); assertFalse(minus.isEnabled)
         web.destroy()
     }
     @Test fun indicatorCaptureDoesNotUsePinchAndGamepadRetainsOwnership() {
@@ -119,12 +125,16 @@ class AndroidInteractionTest {
             s.ax[i]=s.bar.cx; s.az[i]=s.bar.cz; s.hoverKind[i]=Hit.BAR
             s.surfPoint(s.ax[i],s.az[i],0f,point); s.hitX[i]=point[0]; s.hitY[i]=point[1]; s.hitZ[i]=point[2]
         }
-        aim(); finger.tick(0); aim(); finger.tick(600)
+        aim(); finger.tick(0)
+        for(t in 100L..900L step 100) { aim(); finger.tick(t) }
+        aim(); finger.tick(999)
+        assertFalse(s.fingertipPhase[i]==FingertipGesture.Phase.DRAGGING)
+        aim(); finger.tick(1000)
         assertEquals(FingertipGesture.Phase.DRAGGING,s.fingertipPhase[i]); assertEquals(0,clicks)
         assertFalse(s.pressed[i]); assertFalse(s.handPinch[i])
-        s.r2=1f; s.pressed[i]=true; finger.tick(620)
+        s.r2=1f; s.pressed[i]=true; finger.tick(1020)
         assertFalse(s.fingertipOwned[i]); assertTrue(s.pressed[i])
-        s.r2=0f; s.interaction.handMode=InteractionSettings.PINCH; s.pressed[i]=true; finger.tick(700)
+        s.r2=0f; s.interaction.handMode=InteractionSettings.PINCH; s.pressed[i]=true; finger.tick(1100)
         assertFalse(s.fingertipOwned[i]); assertTrue(s.pressed[i])
     }
     @Test fun nearestScreenReceivesFingerHoverAndLockedFramesCannotBeGrabbed() {
@@ -159,7 +169,8 @@ class AndroidInteractionTest {
             s.ax[i]=s.wx; s.az[i]=s.wz; s.hoverKind[i]=Hit.WIN
             s.hitX[i]=point[0]; s.hitY[i]=point[1]; s.hitZ[i]=point[2]
         }
-        finger.tick(0); finger.tick(1000); finger.tick(2100)
+        finger.tick(0)
+        for(t in 100L..2100L step 100) finger.tick(t)
         assertEquals(1,count)
     }
 
@@ -180,7 +191,7 @@ class AndroidInteractionTest {
             } }
             aim(); finger.tick(0)
             assertEquals(if(extraDepth<3f) extra.id else null,ws.hoverId)
-            aim(); finger.tick(1000)
+            for(t in 100L..1000L step 100) { aim(); finger.tick(t) }
             assertEquals(if(extraDepth<3f) 0 else 1,primaryClicks)
         }
     }
@@ -199,7 +210,7 @@ class AndroidInteractionTest {
             finger.tick(t)
         }
         tick(0,false); tick(100,true); tick(180,true)
-        assertEquals(0,clicks); assertEquals(FingertipGesture.Phase.ARMED,s.fingertipPhase[1])
+        assertEquals(1,clicks); assertEquals(FingertipGesture.Phase.ARMED,s.fingertipPhase[1])
         tick(200,false); tick(280,false); tick(350,false)
         assertEquals(1,clicks); assertFalse(s.inputCaptured[1])
     }
@@ -231,6 +242,31 @@ class AndroidInteractionTest {
         assertEquals(2,restored.spatialEngine); assertEquals(92,restored.palmWidthMm); assertEquals(3,restored.handMode)
         prefs.edit().clear().commit(); restored.load(prefs)
         assertEquals(0,restored.spatialEngine); assertEquals(InteractionSettings.INDICATOR,restored.handMode)
+    }
+
+    @Test fun combinedHandInputDoesNotDuplicateDwellPinchOrBriefLoss() {
+        val activity=Robolectric.buildActivity(Activity::class.java).setup().get()
+        val s=VrState().apply { handsOn=true; curved=false; interaction.handMode=InteractionSettings.SPATIAL; updateGeom() }
+        val ws=WorkspaceManager(activity,s); val displays=WorkspaceDisplays(activity)
+        var clicks=0
+        val finger=FingertipInteraction(s,ws,displays,WorkspaceInteraction(ws,s,displays)) { _,_,_,_,_ -> clicks++; true }
+        fun tick(t: Long,pinch: Boolean=false,seen: Boolean=true,x: Float=0f) {
+            s.laserHand[1]=true; s.handValid[1]=true; s.handObserved[1]=seen; s.fingertipPointing[1]=true; s.handPinch[1]=pinch
+            s.ax[1]=x; s.az[1]=s.wz; s.hoverKind[1]=Hit.WIN
+            val point=FloatArray(3); s.surfPoint(x,s.wz,0f,point)
+            s.hitX[1]=point[0]; s.hitY[1]=point[1]; s.hitZ[1]=point[2]
+            finger.tick(t)
+        }
+        for(t in 0L..1000L step 100) tick(t)
+        assertEquals(1,clicks)
+        tick(1100,true); tick(1180,true)
+        for(t in 1200L..2400L step 100) tick(t)
+        assertEquals(1,clicks)
+        tick(2450,seen=false)
+        for(t in 2500L..3600L step 100) tick(t)
+        assertEquals(1,clicks)
+        for(t in 3700L..4700L step 100) tick(t,x=.2f)
+        assertEquals(2,clicks)
     }
 
 }
