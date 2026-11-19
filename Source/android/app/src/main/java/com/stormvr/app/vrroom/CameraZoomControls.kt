@@ -8,7 +8,7 @@ import java.util.Locale
 class CameraZoomControls(context: Context,private val state: VrState,private val changed: ()->Unit): LinearLayout(context) {
     private val value=TextView(context).apply { textSize=24f; setTextColor(Color.WHITE); setPadding(8,8,8,8) }
     private val note=TextView(context).apply { textSize=16f; setTextColor(Color.LTGRAY); setPadding(8,8,8,16) }
-    private val slider=SeekBar(context).apply { max=100; contentDescription="Zoom da câmera" }
+    private val slider=SeekBar(context).apply { max=160; contentDescription="Zoom da câmera" }
     private fun button(name: String,action: ()->Unit)=Button(context).apply { text=name; textSize=22f; isAllCaps=false; minHeight=(56*resources.displayMetrics.density).toInt(); contentDescription=name; setOnClickListener { action() } }
     private val minus=button("−") { setZoom(state.interaction.cameraZoom-.1f) }
     private val plus=button("+") { setZoom(state.interaction.cameraZoom+.1f) }
@@ -22,7 +22,7 @@ class CameraZoomControls(context: Context,private val state: VrState,private val
         })
         addView(slider); addView(reset); addView(note)
         slider.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(bar: SeekBar?,progress: Int,user: Boolean) { if(user) setZoom(1f+progress/100f) }
+            override fun onProgressChanged(bar: SeekBar?,progress: Int,user: Boolean) { if(user) setZoom(CameraZoom.MIN+progress/100f) }
             override fun onStartTrackingTouch(bar: SeekBar?) {}
             override fun onStopTrackingTouch(bar: SeekBar?) {}
         })
@@ -33,9 +33,9 @@ class CameraZoomControls(context: Context,private val state: VrState,private val
         val zoom=CameraZoom.clamp(state.interaction.cameraZoom)
         val supported=state.passthrough && !state.fullscreen
         value.text=String.format(Locale.ROOT,"%.1fx",zoom)
-        slider.progress=((zoom-1f)*100).toInt()
+        slider.progress=((zoom-CameraZoom.MIN)*100).toInt().coerceIn(0,slider.max)
         slider.isEnabled=supported; minus.isEnabled=supported && zoom>1f; plus.isEnabled=supported && zoom<2f; reset.isEnabled=supported
-        note.text=if(supported) "Zoom digital de 1.0x a 2.0x · ARCore e Camera2. A cena acompanha a imagem para manter o alinhamento. Não altera o zoom do navegador nem os ajustes das lentes."
+        note.text=if(supported) "0.4x–0.9x: afastamento VISUAL, com bordas vazias (não amplia o campo capturado pela lente). 1.0x–2.0x: zoom digital. A cena 3D acompanha a imagem; o reconhecimento de mãos usa a imagem original. Não altera WebView ou FOV."
             else "Ative Modo câmera para ajustar. Sem passthrough ou em tela cheia, o zoom da câmera não é aplicado."
     }
 }

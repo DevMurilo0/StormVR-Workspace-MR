@@ -561,9 +561,12 @@ class VrRenderer(
                 st.handRatio[h] = if (ok) f!!.ratio[h] else 1f
                 st.handClosing[h] = ok && f!!.closing[h]
                 if (!ok) {
-                    hRenderInit[h] = false
+                    // Keep the visual filter for a short tracking gap; input remains invalid.
+                    // This prevents a jump on quick re-detection without synthesizing new hand poses.
+                    if (!HandRenderRecovery.shouldBlend(hRenderLastObservedNs[h], now)) hRenderInit[h] = false
                     continue
                 }
+                if (f!!.observed[h]) hRenderLastObservedNs[h] = now
                 // atraso real: processamento do rastreador + (fora do modo câmera) latência da câmera
                 val age = if (f!!.observed[h]) HandSamplePolicy.predictionSeconds(now, f.sampleNs[h], f.latNs) else 0f
                 val src = f.pts[h]
@@ -902,6 +905,7 @@ class VrRenderer(
     private var lastHandsNs = 0L
     private val hRender = Array(2) { FloatArray(63) }
     private val hRenderInit = BooleanArray(2)
+    private val hRenderLastObservedNs = LongArray(2)
 
     override fun onDrawFrame(gl: GL10?) {
         updateWorkspaceTextures()
