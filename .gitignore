@@ -1,7 +1,37 @@
-# Workspace MR local tools and generated artifacts (upstream tracked files are unchanged).
-**/__pycache__/
-Source/android/local.properties
-Source/android/.gradle/
-Source/android/**/build/
-Source/android/**/.cxx/
+# Android / Gradle / Kotlin
+.gradle/
+.kotlin/
+.idea/
+**/build/
+**/.cxx/
+**/.externalNativeBuild/
+local.properties
+*.iml
 *.apk
+*.aab
+# Linux / C++ generated files (vendored JNI .a libraries are required)
+dist/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+*.o
+*.obj
+*.log
+*.tmp
+*.swp
+*.orig
+# Python and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.env
+.env.*
+# Credentials and signing material
+*.jks
+*.keystore
+*.pem
+*.key
+*.p12
+*.pfx
