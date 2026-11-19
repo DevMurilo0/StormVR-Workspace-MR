@@ -125,7 +125,9 @@ class AndroidInteractionTest {
             s.ax[i]=s.bar.cx; s.az[i]=s.bar.cz; s.hoverKind[i]=Hit.BAR
             s.surfPoint(s.ax[i],s.az[i],0f,point); s.hitX[i]=point[0]; s.hitY[i]=point[1]; s.hitZ[i]=point[2]
         }
-        aim(); finger.tick(0); aim(); finger.tick(999)
+        aim(); finger.tick(0)
+        for(t in 100L..900L step 100) { aim(); finger.tick(t) }
+        aim(); finger.tick(999)
         assertFalse(s.fingertipPhase[i]==FingertipGesture.Phase.DRAGGING)
         aim(); finger.tick(1000)
         assertEquals(FingertipGesture.Phase.DRAGGING,s.fingertipPhase[i]); assertEquals(0,clicks)
@@ -167,7 +169,8 @@ class AndroidInteractionTest {
             s.ax[i]=s.wx; s.az[i]=s.wz; s.hoverKind[i]=Hit.WIN
             s.hitX[i]=point[0]; s.hitY[i]=point[1]; s.hitZ[i]=point[2]
         }
-        finger.tick(0); finger.tick(1000); finger.tick(2100)
+        finger.tick(0)
+        for(t in 100L..2100L step 100) finger.tick(t)
         assertEquals(1,count)
     }
 
@@ -188,7 +191,7 @@ class AndroidInteractionTest {
             } }
             aim(); finger.tick(0)
             assertEquals(if(extraDepth<3f) extra.id else null,ws.hoverId)
-            aim(); finger.tick(1000)
+            for(t in 100L..1000L step 100) { aim(); finger.tick(t) }
             assertEquals(if(extraDepth<3f) 0 else 1,primaryClicks)
         }
     }
