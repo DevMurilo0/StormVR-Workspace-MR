@@ -6,16 +6,18 @@ plugins {
 android {
     namespace = "com.stormvr.app"
     compileSdk = 34
+    ndkVersion = "27.0.12077973"
 
     defaultConfig {
-        applicationId = "com.stormvr.app"
+        applicationId = "com.stormvr.workspace.mr"
         minSdk = 26
         targetSdk = 34
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
         versionCode = 1
-        versionName = "0.4.0"
+        versionName = "0.1.0-alpha"
     }
     buildTypes {
-        debug { applicationIdSuffix = ".workspace"; versionNameSuffix = "-workspace-mr" }
+        debug { }
         release { isMinifyEnabled = false }
     }
     compileOptions {

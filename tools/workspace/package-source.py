@@ -2,6 +2,7 @@
 """Package the current checkout without builds, SDK caches, local config or credentials."""
 import argparse
 import hashlib
+import subprocess
 from pathlib import Path
 import zipfile
 
@@ -17,8 +18,10 @@ def main():
     if output.is_relative_to(ROOT):parser.error('Output must be outside the source tree')
     output.parent.mkdir(parents=True,exist_ok=True)
     files=[]
-    for path in ROOT.rglob('*'):
-        relative=path.relative_to(ROOT)
+    names=subprocess.check_output(['git','ls-files','-z','--cached','--others','--exclude-standard'],cwd=ROOT).decode().split('\0')
+    for name in sorted(set(names)-{''}):
+        path=ROOT/name
+        relative=Path(name)
         if any(part in EXCLUDED for part in relative.parts):continue
         if not path.is_file() or path.is_symlink():continue
         if path.name=='local.properties' or path.name.startswith('.env') or path.suffix.lower() in SECRET_SUFFIXES|{'.apk','.aab','.zip'}:continue

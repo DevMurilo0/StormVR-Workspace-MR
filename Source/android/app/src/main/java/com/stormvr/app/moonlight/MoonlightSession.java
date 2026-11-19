@@ -95,6 +95,7 @@ public class MoonlightSession implements NvConnectionListener, PerfOverlayListen
         new Thread(() -> {
             while (keepRun) {
                 try { Thread.sleep(1200); } catch (InterruptedException e) { break; }
+                if (!keepRun || stopped) break;
                 try { com.limelight.nvstream.jni.MoonBridge.requestIdrFrame(); } catch (Throwable t) { /* build antigo sem a funcao nativa */ }
             }
         }, "StormVR-VideoKeepAlive").start();
@@ -128,7 +129,7 @@ public class MoonlightSession implements NvConnectionListener, PerfOverlayListen
     @Override public void stageStarting(String stage) { ev.onStatus("Iniciando: " + stage); }
     @Override public void stageComplete(String stage) { }
     @Override public boolean stageFailed(String stage, int portFlags, int errorCode) { ev.onStatus("Falha em " + stage + " (código " + errorCode + ")"); return false; }
-    @Override public void connectionStarted() { startKeepAlive(); ev.onStarted(); }
+    @Override public void connectionStarted() { if (!stopped) { startKeepAlive(); ev.onStarted(); } }
     @Override public void connectionTerminated(int errorCode) { keepRun = false; if (!stopped) ev.onEnded(errorCode, lastMessage); }
     @Override public void connectionStatusUpdate(int connectionStatus) { }
     @Override public void displayMessage(String message) { lastMessage = message == null ? "" : message; ev.onStatus(lastMessage); }

@@ -1068,16 +1068,16 @@ class VrRoomActivity : Activity() {
         try {
             val camera=fallbackCamera ?: CameraPassthrough(this) { message -> renderer.camErr=message }.also { fallbackCamera=it }
             renderer.cameraFallback=true; renderer.fallbackOrientation=camera.start(texture); renderer.fallbackAspect=camera.aspect
-        } catch(e: Exception) { toast("Passthrough indisponível: ${e.javaClass.simpleName}") }
+        } catch(e: Exception) { renderer.cameraFallback=false; toast("Passthrough indisponível: ${e.javaClass.simpleName}") }
     }
 
     private fun startAr() {
-        if(arUnavailable && state.passthrough) { startFallbackCamera(); return }
         if (!state.sixDof && !state.handsOn && !state.passthrough) { state.arState = 0; return }
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.CAMERA), 77)
             return
         }
+        if(arUnavailable && state.passthrough) { startFallbackCamera(); return }
         try {
             val status = ArCoreApk.getInstance().requestInstall(this, !installRequested)
             if (status == ArCoreApk.InstallStatus.INSTALL_REQUESTED) {
@@ -1118,6 +1118,9 @@ class VrRoomActivity : Activity() {
             state.handsOn = false
             arUnavailable=true
             state.arState = 0
+            renderer.arRunning=false
+            stopHands()
+            try { arSession?.pause() } catch (_: Exception) {}
             if(state.passthrough) {
                 startFallbackCamera()
                 toast("ARCore indisponível. Camera2 com rotação 3DoF; sem posição espacial e sem mãos neste fallback.")

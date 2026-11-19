@@ -1,69 +1,89 @@
-# 🌩️ StormVR
+# StormVR Workspace MR — v0.1.0-alpha
 
-**Transformando smartphones em experiências de realidade virtual.**
+Derivado independente e experimental do [StormVR, criado por OLUKE](https://github.com/oluke0f-art/StormVR). Preserva o desenvolvimento da branch `feature/workspace-mr`, incluindo o commit `dbc19ad`. Não envia alterações ao projeto original. Os créditos e a apresentação original estão em [README_UPSTREAM.md](README_UPSTREAM.md).
 
-O StormVR é um projeto independente criado por OLUKE, com o objetivo de transformar smartphones comuns em dispositivos de realidade virtual, oferecendo uma alternativa acessível para quem deseja experimentar VR sem precisar investir em um headset dedicado.
+## Funcionalidades e limites
 
----
+- Sala VR estéreo para VR Box, passthrough ARCore e alternativa Camera2 monocular.
+- Rastreamento MediaPipe e pinça pelo pipeline ARCore; Camera2 não oferece mãos nem 6DoF. O modelo de mãos (~8 MB) é baixado no primeiro uso e exige internet.
+- Até três telas: principal com Moonlight e duas WebViews independentes, manipuláveis por raios/gestos.
+- Presets, posição, tamanho, curvatura, visibilidade, bloqueio e layouts locais persistentes.
+- Vídeo Moonlight diretamente em textura OpenGL OES, com reconexão e proteção contra callbacks de sessões encerradas.
+- Serviço Linux com seleção explícita de fontes via portal ScreenCast/PipeWire, autenticação e JPEG por HTTPS.
 
-## 🚀 Sobre o projeto
+Há **uma sessão Moonlight**, e o serviço alternativo opera a até 15 FPS, sem entrada remota Linux. Não há comprovação de correção do congelamento em aparelho. Câmera, mãos, reconexão, desempenho e múltiplos monitores precisam de testes físicos. Consulte [funcionalidades e limitações detalhadas](docs/WORKSPACE_MR.md) e [resultados dos testes](docs/TEST_RESULTS.md).
 
-O StormVR reúne diferentes componentes de software e hardware:
+## Pastas
 
-### 📱 Aplicativo Android
-Aplicativo responsável pelas funcionalidades do StormVR no smartphone.
+| Caminho | Conteúdo |
+|---|---|
+| `Source/android` | App Kotlin/Java e núcleo Moonlight/JNI |
+| `tools/workspace` | Serviço Linux, TLS, instalação, testes e ferramentas Android |
+| `Source/linux_droiddeck` | Driver e ferramentas Linux herdados |
+| `docs` | Guia técnico, testes e limitações |
+| Demais pastas em `Source` | Componentes originais preservados |
 
-### 🖥️ Driver Windows
-Driver de sistema para Windows responsável pela integração do StormVR com o computador.
+## Compilar no Linux
 
-### 🎮 Driver DroidDeck
-Driver que adiciona compatibilidade com os controles StormVR no DroidDeck, permitindo utilizar o smartphone como controle para jogos de PC VR, mesmo sem possuir um headset VR.
+Use Java 17, Gradle 8.7, AGP 8.5.2, Kotlin 1.9.24, SDK 34/35, Build Tools 34 e NDK **27.0.12077973**. O bootstrap instala em `$HOME/Android/stormvr`, verifica os downloads e exige pelo menos 10 GiB livres. O argumento de instalação aceita as licenças do SDK Android.
 
-### 🔧 Firmware ESP32
-Firmware desenvolvido para os controles baseados em ESP32.
+```bash
+git clone https://github.com/DevMurilo0/StormVR-Workspace-MR.git
+cd StormVR-Workspace-MR
+python tools/workspace/bootstrap-android.py --accept-licenses
+source "$HOME/Android/stormvr/environment.sh"
+bash tools/workspace/build-android.sh :app:testDebugUnitTest :app:assembleDebug
+```
 
----
+Saída: `Source/android/app/build/outputs/apk/debug/app-debug.apk`. O NDK inclui o `ndk-build`; CMake não é usado pelo módulo Android. SDK, NDK, JDK e caches permanecem no `/home`. `local.properties` é específico da máquina e não é versionado.
 
-## ⚠️ Estado do desenvolvimento
+## Instalar no Android
 
-O StormVR ainda está em desenvolvimento e não é um produto finalizado.
+Requisitos mínimos declarados: Android 8/API 26, ARM64 ou ARMv7, giroscópio e OpenGL ES 2.0. ARCore e os recursos da câmera dependem do aparelho. Baixe o APK da pré-release `v0.1.0-alpha`, permita a instalação por essa fonte e abra **StormVR Workspace MR**.
 
-- Algumas funcionalidades podem estar incompletas.
-- Existem bugs e problemas de compatibilidade.
-- Alguns componentes ainda precisam de melhorias.
-- O funcionamento pode variar dependendo do dispositivo e da configuração utilizada.
+Ou, com depuração USB autorizada:
 
----
+```bash
+"$ANDROID_HOME/platform-tools/adb" devices -l
+"$ANDROID_HOME/platform-tools/adb" install -r StormVR-Workspace-MR-v0.1.0-alpha.apk
+```
 
-## 📜 Licença
+O pacote `com.stormvr.workspace.mr` possui dados e pareamento próprios e coexiste com `com.stormvr.app`. Não desinstale o StormVR original. Builds locais futuros precisam usar a mesma chave debug para atualizar esta instalação; as chaves não são publicadas.
 
-O StormVR é distribuído sob a licença **GNU General Public License v3.0 (GPL-3.0)**.
+## Configurar o Linux e as telas
 
-Você pode utilizar, estudar, modificar e redistribuir o código, respeitando os termos da licença.
+1. Mantenha Sunshine funcionando no PC e conecte PC e celular à mesma LAN. No app, abra Moonlight e pareie confirmando o PIN no Sunshine. Comece com 720p30. Na Sala VR, abra Home → Moonlight → Desktop.
+2. Para fontes adicionais, confira as dependências do portal/GStreamer e instale o lançador:
 
-[Consultar a GNU GPL v3.0](https://www.gnu.org/licenses/gpl-3.0.html).
+```bash
+bash tools/workspace/check-host.sh
+bash tools/workspace/install-service.sh
+bash tools/workspace/setup-tls.sh 192.168.1.20
+stormvr-workspace --bind 192.168.1.20 \
+  --cert "$HOME/.config/stormvr-workspace/cert.pem" \
+  --key "$HOME/.config/stormvr-workspace/key.pem" \
+  --token-file "$HOME/.config/stormvr-workspace/token" --fps 10
+```
 
-O texto completo da licença está disponível no arquivo `LICENSE` deste repositório.
+Substitua o IP pelo endereço privado do PC. O lançador é instalado em `~/.local/bin`; se necessário, use `~/.local/bin/stormvr-workspace`. Selecione os monitores na janela do portal. Nenhum serviço inicia automaticamente.
 
----
+3. Instale apenas a CA `stormvr-lan.crt` no Android após comparar sua impressão digital. Configure uma tela adicional com `https://IP_DO_PC:8443/#TOKEN_LOCAL`, selecione uma fonte e repita com outra fonte em outra tela. Nunca transfira a chave privada. Os detalhes e dependências Arch estão no [guia](docs/WORKSPACE_MR.md#fontes-linux-independentes-por-portalpipewire).
 
-## ☕ Apoie o desenvolvimento
+## Atualizações e testes
 
-Gostou do StormVR? Que tal pagar um cafezinho com croissant? 🥐☕
+```bash
+git switch main
+git pull --ff-only
+source "$HOME/Android/stormvr/environment.sh"
+bash tools/workspace/build-android.sh :app:testDebugUnitTest :app:assembleDebug
+python -m unittest discover -s tools/workspace -p 'test_*.py' -v
+git log --oneline -10
+```
 
-[☕ ME PAGUE UM CAFÉ COM CROISSANT — LIVEPIX](https://livepix.gg/oluke)
+A branch `feature/workspace-mr` permanece disponível. A release é uma versão de desenvolvimento assinada com chave debug; não há teste físico implícito na compilação.
 
----
+## Licenças e atribuição
 
-## 🌐 Minhas redes sociais
+StormVR original: OLUKE / `oluke0f-art`. [LICENSE](LICENSE) contém **GNU AGPL-3.0**, embora o README original declare GPL-3.0. O texto e os avisos originais são preservados, sem converter a licença para uma modalidade mais permissiva. A divergência deve ser esclarecida com o titular antes de uma distribuição pública. As obrigações de disponibilização do código aplicável permanecem; o código correspondente acompanha a tag da release.
 
-- 🎵 **TikTok:** [@oluke28](https://www.tiktok.com/@oluke28)
-- 📸 **Instagram:** [@oluke.skull](https://www.instagram.com/oluke.skull/)
-- ▶️ **YouTube:** [@OLUKE.F](https://www.youtube.com/@OLUKE.F)
-- 💻 **GitHub:** [@oluke0f-art](https://github.com/oluke0f-art)
-
----
-
-**Desenvolvido por OLUKE.**
-
-🌩️ *StormVR — VR ao alcance de todos.*
+O núcleo Moonlight/Artemis e suas dependências mantêm seus créditos e licenças nos diretórios originais. As bibliotecas estáticas herdadas são necessárias ao JNI; sua procedência está em `Source/android/moonlightcore/src/main/jni/moonlight-core/Build.txt` e o script OpenSSL acompanha o código. Caches e builds foram retirados da árvore atual; os commits antigos são preservados para não reescrever o histórico.

@@ -7,14 +7,12 @@ Só o necessário para **conectar ao Sunshine/Apollo/GeForce e receber o vídeo/
 - Código nativo: `src/main/jni` (moonlight-core, moonlight-common-c, libopus, openssl pré-compilado). Sem `evdev_reader` (modo root).
 - NÃO incluídos (UI do Artemis): `Game`, `PcView`, `AppView`, configurações, descoberta mDNS, entrada por gamepad/mouse.
 
-## Como ligar
-1. `android/gradle.properties`: `stormvr.moonlight=true`
-2. Sync do Gradle. Precisa do NDK 27.0.12077973 (o Android Studio oferece instalar).
-3. Se o AGP 8.5.2 reclamar do compileSdk 35 / dependências, suba o AGP (ex.: 8.9+) em `build.gradle.kts` e `gradle-wrapper.properties`.
-4. Se compilar, o próximo passo (fachada do StormVR) é: parear por PIN (`PairingManager.pair`), listar apps (`NvHTTP.getAppList`),
-   `launchApp` e `NvConnection.start(...)` com `MediaCodecDecoderRenderer.setRenderTarget(surface)`:
-   - **tela cheia**: `Surface` de um `SurfaceView` comum (sem GL, sem estéreo);
-   - **tela flutuante na Sala 3D**: `Surface(SurfaceTexture)` ligado à textura do `ScreenSource` da sala.
+## Compilação e integração Workspace MR
 
-## Status
-Escrito/copiado, **NUNCA compilado** (sem Gradle/NDK no ambiente de desenvolvimento). Desligado por padrão para não quebrar o build atual.
+O módulo está incluído em `settings.gradle.kts` e é dependência do app. A propriedade legada `stormvr.moonlight` não desativa o módulo nesta configuração.
+
+Use NDK 27.0.12077973, Java 17 e Gradle 8.7 conforme o [README principal](../../../README.md). O código conecta `MoonlightSession` a uma SurfaceView no painel normal e a uma SurfaceTexture OES consumida na thread OpenGL na Sala VR. A renderização consome o vídeo uma vez por frame, antes de desenhar os dois olhos.
+
+O Workspace mantém apenas uma conexão nativa Moonlight. A mudança de superfície encerra o produtor anterior antes de liberar a superfície antiga. Reconexões e callbacks são invalidados por geração ao sair. H.264 é fixado no Workspace; o painel normal mantém a seleção automática de codecs.
+
+Consulte o [relatório de testes](../../../docs/TEST_RESULTS.md). Compilar não comprova ausência de congelamentos em aparelhos; são necessários testes com Sunshine, MediaCodec, mãos ativas e perda de contexto EGL.

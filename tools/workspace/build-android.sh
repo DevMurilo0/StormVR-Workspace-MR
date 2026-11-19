@@ -6,6 +6,8 @@ toolchain_dir="${STORMVR_TOOLCHAIN:-$HOME/Android/stormvr}"
 if [[ -f "$toolchain_dir/environment.sh" ]]; then
     source "$toolchain_dir/environment.sh"
 fi
+export TMPDIR="$toolchain_dir/tmp"
+mkdir -p "$TMPDIR"
 export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$toolchain_dir/gradle-cache}"
 gradle_bin="$toolchain_dir/gradle-8.7/bin/gradle"
 if [[ ! -x "$gradle_bin" ]]; then

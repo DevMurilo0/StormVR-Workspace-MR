@@ -131,6 +131,9 @@ class MoonlightPane(ctx: Context, private val act: Activity) : FrameLayout(ctx),
 
     fun endSession() {
         val s = session ?: return
+        wanted=false; connectionGeneration++
+        reconnectHandler.removeCallbacks(retry)
+        onVideoActive?.invoke(false)
         session = null
         stopMouseTick(); down = false
         ui { endBtn.visibility = View.GONE }
@@ -178,8 +181,8 @@ class MoonlightPane(ctx: Context, private val act: Activity) : FrameLayout(ctx),
     }
 
     private var picker: View? = null
-    private fun scheduleRetry() { ui {
-        if(wanted) {
+    private fun scheduleRetry(epoch: Int = connectionGeneration) { ui {
+        if(wanted && epoch == connectionGeneration) {
             val delay=(1000L shl retryCount.coerceAtMost(4)).coerceAtMost(15000L)
             retryCount++
             reconnectHandler.removeCallbacks(retry); reconnectHandler.postDelayed(retry,delay)
@@ -253,9 +256,9 @@ class MoonlightPane(ctx: Context, private val act: Activity) : FrameLayout(ctx),
         if (directSurface?.isValid != true && !surfaceReady) { pending = ip to app; return }
         val epoch = ++connectionGeneration
         val s = MoonlightSession(act, object: MoonlightSession.Events {
-            override fun onStatus(text: String) { if(epoch == connectionGeneration) this@MoonlightPane.onStatus(text) }
-            override fun onStarted() { if(epoch == connectionGeneration) this@MoonlightPane.onStarted() }
-            override fun onEnded(code: Int,message: String) { if(epoch == connectionGeneration) this@MoonlightPane.onEnded(code,message) }
+            override fun onStatus(text: String) { ui { if(wanted && epoch == connectionGeneration) this@MoonlightPane.onStatus(text) } }
+            override fun onStarted() { ui { if(wanted && epoch == connectionGeneration) this@MoonlightPane.onStarted() } }
+            override fun onEnded(code: Int,message: String) { ui { if(wanted && epoch == connectionGeneration) this@MoonlightPane.onEnded(code,message) } }
         })
         session = s
         try { s.start(ip, app, store, directSurface?.takeIf { it.isValid } ?: sv.holder.surface, workspaceH264) } catch (e: Throwable) { s.stop(); session = null; say("Falha ao iniciar: ${e.message ?: e.javaClass.simpleName}"); scheduleRetry() }
@@ -286,8 +289,9 @@ class MoonlightPane(ctx: Context, private val act: Activity) : FrameLayout(ctx),
     override fun onEnded(errorCode: Int, message: String) {
         ui { onVideoActive?.invoke(false) }
         val ended=session
+        val epoch=++connectionGeneration
         session = null
-        Thread { ended?.stop(); scheduleRetry() }.start()
+        Thread { ended?.stop(); scheduleRetry(epoch) }.start()
         ui { endBtn.visibility = View.GONE }
         say("Transmissão encerrada" + (if (errorCode != 0) " (erro $errorCode)" else "") + (if (message.isNotEmpty()) "\n$message" else "") + "\nTentando reconectar; Home cancela a transmissão.")
     }

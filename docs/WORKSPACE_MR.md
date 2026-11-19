@@ -1,12 +1,12 @@
 # StormVR Workspace MR — implementação experimental
 
-**Estado da entrega: código implementado; Android não compilado nem validado em aparelho. Não é uma versão funcional certificada e os critérios de aceitação ainda não foram demonstrados.**
+**Versão experimental v0.1.0-alpha. Consulte o [relatório de testes](TEST_RESULTS.md) para o resultado da compilação. Não há validação em aparelho nesta sessão.**
 
-Repositório reutilizado: `/home/murilo/StormVR-teste`, base `a94f5af`, branch local `feature/workspace-mr`. Checkout parcial ampliado com o código Android, excluindo caches e builds versionados pelo upstream. O diretório preexistente `Source/linux_droiddeck/dist/` foi preservado. Nenhuma alteração foi publicada.
+Repositório reutilizado: `/home/murilo/StormVR-teste`, retomado no commit `dbc19ad`, branch `feature/workspace-mr`. O histórico completo original foi recuperado. Caches e builds herdados foram retirados da árvore atual, mantendo os commits antigos. O diretório preexistente `Source/linux_droiddeck/dist/` foi preservado localmente e ignorado.
 
 ## O que foi alterado
 
-- Identidade debug `com.stormvr.app.workspace`, rótulo **StormVR Workspace MR**, sem substituir o app original.
+- Identidade debug `com.stormvr.workspace.mr`, rótulo **StormVR Workspace MR**, sem substituir o app original.
 - Saída Moonlight diretamente para uma SurfaceTexture OES, separada da superfície do display virtual da interface. `updateTexImage` ocorre na thread GL, antes de desenhar ambos os olhos; matriz de textura respeitada. SurfaceView continua disponível no painel normal. Contador de frames nos diagnósticos.
 - Reconexão Moonlight após término, com intervalo crescente até 15 segundos; cancelamento ao sair. Status volta a ser composto pela interface durante desconexão. Sessões antigas são invalidadas por geração.
 - Reanexação da superfície do display virtual ao retomar e preservação do contexto EGL. Pausa interrompe streaming, câmera e interação. Superfícies do decodificador anterior são liberadas depois de parar seu proprietário.
@@ -35,7 +35,7 @@ O argumento `--accept-licenses` aceita os termos apresentados pelo sdkmanager. R
 
 O bootstrap substitui somente a configuração local de SDK em `local.properties`, ignorando o caminho Windows original. Esse arquivo fica fora do ZIP e de novos commits. O JDK 17 vem do Adoptium, com checksum da API; os command-line tools vêm do índice oficial Google, com checksum do índice. Não reutilize downloads parciais como ferramentas instaladas.
 
-Resultado esperado, **ainda não gerado nesta sessão**:
+Caminho de saída do build:
 
 `Source/android/app/build/outputs/apk/debug/app-debug.apk`
 
@@ -47,15 +47,11 @@ Instalação, após compilação bem-sucedida:
 
 Não execute uninstall do app original. O debug usa outra identidade e outro armazenamento: será necessário parear o PC novamente. Não se copiam certificados de pareamento do app antigo.
 
-### Resultado do ambiente e impedimento final
+### Recuperação do ambiente
 
-Java 17 (Temurin 17.0.21.1+2), Gradle 8.7, wrapper oficial completo, command-line tools 12 e Build Tools 34 foram preparados no `/home/murilo/Android/stormvr`. A distribuição Gradle e os command-line tools passaram por comparação com os checksums oficiais. O JDK passou pelo checksum da API Adoptium. A configuração Gradle/AGP chegou a ser executada.
+A instalação anterior do NDK continha somente `.installer`, sem `source.properties`. A recuperação usa o arquivo oficial `https://dl.google.com/android/repository/android-ndk-r27-linux.zip`, cujo SHA-1 publicado pelo índice Google é `5e5cd517bdb98d7e0faf2c494a3041291e71bdcc`. A instalação é aceita somente após checksum, CRC do ZIP, conferência da revisão e execução do Clang. O bootstrap também detecta e remove somente a instalação incompleta da versão fixada antes de reinstalar.
 
-A tentativa real de `assembleDebug` terminou com `BUILD FAILED in 8m`: **SDK location not found**. Naquele momento, as plataformas Android 34/35 e o NDK ainda não estavam instalados; o arquivo upstream local.properties ainda apontava para Windows. As tentativas posteriores de concluir os pacotes sofreram repetidos `Connection reset by peer`, timeouts e interrupções. Os downloads parciais foram interrompidos e **não foram tratados como SDK/NDK válidos**. Não houve compilação Kotlin/JNI completa, nem execução dos testes Android ou APK gerado. Uma cópia limpa da base foi exportada no cache para verificação, mas também não foi compilada.
-
-As primeiras falhas de bootstrap incluíram reset de conexão e HTTP 403 na busca do JDK; isso foi resolvido usando curl. Um download corrompido dos command-line tools foi recuperado e só então aceito após checksum. Após configurar o caminho Linux local e usar Java 17, foi feita mais uma tentativa offline, com download automático desativado. Ela terminou em 54 segundos com **CXX1101: NDK 27.0.12077973 did not have a source.properties file**. Esse é o impedimento final confirmado. O SDK/NDK e a compilação real ainda precisam ser concluídos. Os arquivos parciais ficam somente no `/home`, fora do ZIP. Não basta apontar local.properties para uma pasta ainda incompleta.
-
-Para retomar, execute o bootstrap completo acima. Ele verifica downloads, reinstala um arquivo que falhe no checksum e escreve local.properties/environment.sh **depois** da instalação dos pacotes. O auxiliar de build usa essa configuração local. Não foram alterados caminhos globais nem instalados pacotes na raiz do sistema.
+SDK/NDK, JDK 17, Gradle 8.7, downloads e caches ficam em `/home/murilo/Android/stormvr`. `local.properties` aponta para esse SDK e permanece fora do Git. As plataformas 34/35 e platform-tools também são verificadas contra os checksums oficiais. Os logs locais ficam no diretório da ferramenta; o resultado final está no relatório de testes.
 
 ## Conectar Sunshine/Moonlight
 
@@ -121,7 +117,7 @@ O Flatpak Sunshine tem `/dev/dri/renderD128`, mas a busca no seu `/usr/lib` enco
 
 ## Limitações e pendências
 
-- Todos os caminhos Android novos precisam compilar e passar por teste em celular; não foram feitos testes visuais de interface.
+- A compilação e os testes automatizados estão descritos no relatório; os caminhos Android ainda precisam de teste em celular. Não foram feitos testes visuais de interface.
 - Congelamento: foi removida a composição intermediária suspeita, mas a causa no aparelho não foi reproduzida; não se afirma correção comprovada. É necessário validar MediaCodec/OES, reconexão e EGL perdido com ARCore/MediaPipe ativos.
 - Fallback Camera2 não alimenta MediaPipe; as mãos continuam dependentes do pipeline ARCore nesta versão. FOV/crop e orientação do fallback precisam de calibração por aparelho. A câmera é monocular duplicada para os olhos, sem profundidade estéreo nativa nem equivalência a transparência óptica.
 - O posicionamento usa o referencial local ARCore, sem âncoras persistentes entre sessões. Um layout salvo restaura coordenadas relativas; não reconhece fisicamente o mesmo lugar do quarto. Com 3DoF, translação da cabeça não é rastreada. Não usar para locomoção confiando na imagem.

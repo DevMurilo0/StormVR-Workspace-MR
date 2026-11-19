@@ -84,7 +84,15 @@ def main():
     env['PATH']=str(java/'bin')+':'+env['PATH']
     manager=str(tools/'bin'/'sdkmanager')
     subprocess.run([manager,'--sdk_root='+str(sdk),'--licenses'],input='y\n'*100,text=True,env=env,check=True)
+    ndk=sdk/'ndk'/'27.0.12077973'
+    if ndk.exists() and not (ndk/'source.properties').is_file():
+        # Only the pinned incomplete installation; never delete another NDK.
+        shutil.rmtree(ndk)
     subprocess.run([manager,'--sdk_root='+str(sdk),'platform-tools','platforms;android-34','platforms;android-35','build-tools;34.0.0','ndk;27.0.12077973'],env=env,check=True)
+    properties_file=ndk/'source.properties'
+    if not properties_file.is_file() or '27.0.12077973' not in properties_file.read_text():
+        raise RuntimeError('NDK installation failed integrity check: '+str(properties_file))
+    subprocess.run([str(ndk/'toolchains/llvm/prebuilt/linux-x86_64/bin/clang'),'--version'],check=True)
     # Never reuse the tracked Windows local.properties. Gradle's SDK override is local.
     properties=ROOT/'Source/android/local.properties'
     properties.write_text('sdk.dir='+str(sdk)+'\n')
