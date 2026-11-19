@@ -30,6 +30,8 @@ class SpatialGesture {
     fun release() {
         phase=FingertipGesture.Phase.RELEASED; armed=false; downSince=-1
         openSince=-1; dwellCaptured=false; hoverSince=-1; notPointingSince=-1; progress=0f
+        // A completed pinch must not immediately become a second dwell click on the same target.
+        dwellLatchedId=target
     }
     fun update(id: String?,action: FingertipGesture.Kind,px: Float,py: Float,observed: Boolean,
                pointing: Boolean,grip: Boolean,blocked: Boolean,now: Long,tolerance: Float,
@@ -94,7 +96,8 @@ class SpatialGesture {
         val moved=target!=id || hypot(px-x,py-y)>tolerance
         if(moved || !armed) {
             target=id; kind=action; x=px; y=py; armed=true
-            hoverSince=now; progress=0f; dwellLatchedId=null
+            hoverSince=now; progress=0f
+            if(moved) dwellLatchedId=null
             phase=FingertipGesture.Phase.HOVER
             return false
         }

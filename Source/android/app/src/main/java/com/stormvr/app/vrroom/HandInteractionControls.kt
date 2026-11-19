@@ -47,12 +47,12 @@ class HandInteractionControls(context: Context,settings: InteractionSettings,cha
             minHeight=(52*resources.displayMetrics.density).toInt()
             setOnCheckedChangeListener { _,value -> settings.diagnostics=value; changed() }
         })
-        val time=label("Ativar arraste: ${settings.dragActivationMs} ms")
+        val time=label("Indicador parado (Enter / mover): ${maxOf(1000,settings.dwellMs)} ms")
         addView(time)
         addView(SeekBar(context).apply {
-            contentDescription="Tempo de ativação do arraste"; max=900; progress=settings.dragActivationMs-300
+            contentDescription="Tempo do indicador parado"; max=1500; progress=(settings.dwellMs-1000).coerceIn(0,1500)
             setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(bar: SeekBar?,value: Int,user: Boolean) { if(user) { settings.dragActivationMs=300+value; time.text="Ativar arraste: ${settings.dragActivationMs} ms"; changed() } }
+                override fun onProgressChanged(bar: SeekBar?,value: Int,user: Boolean) { if(user) { settings.dwellMs=1000+value; time.text="Indicador parado (Enter / mover): ${settings.dwellMs} ms"; changed() } }
                 override fun onStartTrackingTouch(bar: SeekBar?) {}
                 override fun onStopTrackingTouch(bar: SeekBar?) {}
             })

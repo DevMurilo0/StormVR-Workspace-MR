@@ -23,7 +23,7 @@ class AndroidInteractionTest {
         val s=InteractionSettings().apply { handStyle=2; keyboardScale=1.5f; dwellMs=900; dominantHand=0; pinchThreshold=.3f; diagnostics=true }
         s.save(prefs)
         val loaded=InteractionSettings(); loaded.load(prefs)
-        assertEquals(2,loaded.handStyle); assertEquals(900,loaded.dwellMs); assertEquals(0,loaded.dominantHand)
+        assertEquals(2,loaded.handStyle); assertEquals(1000,loaded.dwellMs); assertEquals(0,loaded.dominantHand)
         assertEquals(.3f,loaded.pinchThreshold,0f); assertEquals(1.5f,loaded.keyboardScale,0f); assertTrue(loaded.diagnostics)
         prefs.edit().clear().commit(); loaded.load(prefs)
         assertEquals(1000,loaded.dwellMs); assertEquals(1,loaded.dominantHand); assertEquals(0,loaded.handStyle)
