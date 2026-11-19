@@ -25,11 +25,13 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+    testOptions { unitTests.isIncludeAndroidResources = true }
     buildFeatures { aidl = true }                                   // IShellService (UserService do Shizuku)
     packaging { resources { pickFirsts.add("META-INF/versions/9/OSGI-INF/MANIFEST.MF") } }   // bouncycastle duplicado (Moonlight)
 }
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.13")
     // S Pen Remote SDK da Samsung (opcional): coloque spenremote-v1.0.X.jar e sdk-v1.0.0.jar em app/libs. Sem eles o app compila igual (a S Pen so fica desligada).
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.jar"))))
     // Vindas do app VR Room (agora dentro do StormVR): so a Sala VR usa estas duas.

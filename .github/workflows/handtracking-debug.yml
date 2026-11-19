@@ -1,0 +1,43 @@
+name: StormVR HandTracking Debug APK
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  apk:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install pinned Android packages
+        run: sdkmanager 'platforms;android-34' 'platforms;android-35' 'build-tools;34.0.0' 'ndk;27.0.12077973'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Verify bundled hand model
+        run: python tools/workspace/verify-hand-model.py
+      - name: Tests and debug APK
+        run: gradle -p Source/android --no-daemon --max-workers=2 :app:testDebugUnitTest :app:assembleDebug
+      - name: Verify APK and calculate SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd Source/android/app/build/outputs/apk/debug
+          test -s app-debug.apk
+          mv app-debug.apk StormVR-Workspace-MR-HandTracking-Debug.apk
+          sha256sum StormVR-Workspace-MR-HandTracking-Debug.apk > StormVR-Workspace-MR-HandTracking-Debug.apk.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StormVR-Workspace-MR-HandTracking-Debug
+          path: |
+            Source/android/app/build/outputs/apk/debug/StormVR-Workspace-MR-HandTracking-Debug.apk*
+            Source/android/app/build/reports/tests/testDebugUnitTest/
+          if-no-files-found: error
+          retention-days: 30

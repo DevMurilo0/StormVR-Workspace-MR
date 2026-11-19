@@ -85,6 +85,19 @@ class VrState {
     @Volatile var pcSendPinch = true  // enviar a PINÇA (o driver a usa como trigger)
     @Volatile var fullscreen = false  // tela cheia: só a página/stream ocupando o celular inteiro, com toque direto
     @Volatile var fsFill = false      // tela cheia: esticar até as bordas (senão mantém a proporção 16:9)
+    val fingertipOwned=BooleanArray(2)
+    val fingertipTargetId=arrayOfNulls<String>(2)
+    val fingertipPhase=Array(2) { FingertipGesture.Phase.IDLE }
+    val fingertipPointing=BooleanArray(2)
+    val inputCaptured=BooleanArray(2)
+    val dwellProgress=FloatArray(2)
+    val clickSentAt=LongArray(2)
+    val interaction = InteractionSettings()
+    val handInputPts = Array(2) { FloatArray(63) }
+    val handObserved = BooleanArray(2)
+    val handSpatial = arrayOfNulls<SpatialHandEngine.Sample>(2)
+    @Volatile var depthEnabled=false
+    @Volatile var depthStatus = "desligada"
     @Volatile var dwell = false       // clicar olhando (~1,2 s) nos botões e no teclado, para quem está sem controle/mãos
     val gaze = FloatArray(3)          // direção do olhar (frente da cabeça) no referencial da cena, escrita pela GL thread
     @Volatile var glFps = 0
@@ -187,9 +200,9 @@ class VrState {
 
     init { updateGeom() }
 
-    fun handle() = width * 0.045f
-    fun cornerS(i: Int) = wx + (if (i % 2 == 0) -1f else 1f) * (win.w / 2f + handle() * 0.35f)
-    fun cornerZ(i: Int) = win.cz + (if (i < 2) 1f else -1f) * (win.h / 2f + handle() * 0.35f)
+    fun handle() = maxOf(.12f,width * 0.065f)
+    fun cornerS(i: Int) = wx + (if (i % 2 == 0) -1f else 1f) * (win.w / 2f + handle() * 1.05f)
+    fun cornerZ(i: Int) = win.cz + (if (i < 2) 1f else -1f) * (win.h / 2f + handle() * 1.05f)
 
     /** Curvatura K = 1/R (0 = plano). */
     @Volatile var workspaceCurve = 1f
@@ -267,6 +280,7 @@ class VrState {
         dx: Float, dy: Float, dz: Float,
         out: FloatArray
     ): Boolean {
+        if(floatArrayOf(ox,oy,oz,dx,dy,dz).any { !it.isFinite() } || dx*dx+dy*dy+dz*dz<1e-12f) return false
         if (screenIdentity()) return intersectLocal(ox, oy, oz, dx, dy, dz, out)
         // leva o raio para as coordenadas LOCAIS da tela (inversa da transformação = transposta da rotação)
         val a = FloatArray(9); val b = FloatArray(3); screenXf(a, b)
@@ -287,7 +301,7 @@ class VrState {
     ): Boolean {
         val k = curveK()
         if (k < 1e-4f) {
-            if (dy < 0.05f) return false
+            if (!dy.isFinite() || dy <= 1e-6f * sqrt(dx*dx+dy*dy+dz*dz)) return false
             val t = (distance - oy) / dy
             if (t <= 0f) return false
             out[0] = ox + t * dx
@@ -322,14 +336,13 @@ class VrState {
         val tbH = w * TB_H / TB_W
         val gap = w * 0.012f
         tb.set(wx, distance, wz - h / 2f - gap - tbH / 2f, w, tbH)
-        val barH = w * 0.022f
-        bar.set(wx, distance, tb.cz - tbH / 2f - gap - barH / 2f, w * 0.25f, barH)
+        bar.set(wx, distance, wz + h/2f + handle()*1.4f, w*.78f, handle()*1.1f)
         val ky = (distance - 0.8f).coerceAtLeast(1.0f)
         var kx: Float; var kyy: Float; var kz: Float; var kw: Float
         var px = 0f; var py = 0f; var pz = 0f                                    // pivô da órbita
         if (handsOn && handState >= 2) {
             // com as mãos ligadas o teclado fica ao alcance (a ~60 cm), para digitar tocando ou pinçando as teclas
-            kx = headX; kyy = headY + 0.62f; kz = headZ - 0.12f; kw = 0.70f
+            kx = headX; kyy = headY + interaction.keyboardDistance; kz = headZ - 0.12f; kw = 0.70f
             px = headX; py = headY; pz = headZ
         } else { kx = wx; kyy = ky; kz = -0.85f; kw = KB_METERS }
         val d = (Math.PI / 180.0).toFloat()
@@ -339,6 +352,7 @@ class VrState {
         kx = px + o[0] * rx0 + o[1] * ry0 + o[2] * rz0
         kyy = py + o[3] * rx0 + o[4] * ry0 + o[5] * rz0
         kz = pz + o[6] * rx0 + o[7] * ry0 + o[8] * rz0
+        kw *= interaction.keyboardScale
         kb.set(kx, kyy, kz, kw, kw * KB_H / KB_W)
     }
 

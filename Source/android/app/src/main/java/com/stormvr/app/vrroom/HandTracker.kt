@@ -29,7 +29,10 @@ class HandsFrame(
     val ratio: FloatArray,          // distância polegar-indicador / tamanho da mão (contínuo)
     val closing: BooleanArray,      // dedos se fechando rápido (pinça a caminho)
     val latNs: Long,                // atraso entre o envio do quadro e a publicação (conversão + detecção + fila)
-    val arrivalNs: Long
+    val arrivalNs: Long,
+    val sampleNs: LongArray = longArrayOf(arrivalNs, arrivalNs),
+    val observed: BooleanArray = valid.copyOf(),
+    val spatial: Array<SpatialHandEngine.Sample?> = arrayOfNulls(2)
 )
 
 /** Filtro One Euro: tira o tremor quando a mão está parada e quase não atrasa quando ela se move. */
@@ -106,11 +109,14 @@ class HandTracker(
         var yRow = 0
         var uvRow = 0
         var uvPix = 0
+        var sensorPose = false
         var rot = 0                      // rotação horária para ficar "em pé" (0/90/180/270)
         val pose = FloatArray(16)        // matriz olho -> cena no instante do quadro
         var fx = 0f; var fy = 0f; var cx = 0f; var cy = 0f
         var tsNs = 0L
         var submitNs = 0L
+        var captureNs = 0L
+        var rawDepth: RawHandDepth? = null
 
         fun copyFrom(img: Image) {
             w = img.width
@@ -189,7 +195,7 @@ class HandTracker(
     private var lastTsMs = 0L
 
     // estado por mão (0 = esquerda, 1 = direita)
-    private val filters = Array(2) { OneEuro(63, 2.2f, 28f, 1.0f) }
+    private val filters = Array(2) { OneEuro(63, 1.6f, 8f, 1.0f) }
     private val priors = Array(2) { HandPrior() }        // anatomia: mantém o tamanho dos dedos e limita a dobra (mão fechando)
     private val active = BooleanArray(2)
     private val pinchState = BooleanArray(2)
@@ -197,8 +203,14 @@ class HandTracker(
     private val prevT = FloatArray(2)
     private val vel = Array(2) { FloatArray(3) }
     private val ratioOut = FloatArray(2) { 1f }
-    private var lastSeenNs = 0L
+    private val lastSeenNs = LongArray(2)
+    private val pinchLatch = Array(2) { PinchLatch() }
     private val startNs = System.nanoTime()
+    private val spatialEngine = SpatialHandEngine()
+    private val spatialSamples = arrayOfNulls<SpatialHandEngine.Sample>(2)
+    private var spatialMode = -1
+    private var palmWidth = -1
+    private var sensorFrame = false
     private val closingS = BooleanArray(2)
     private val rvF = FloatArray(2)
     private var swapVotes = 3      // >= 0: o rótulo do MediaPipe vem invertido (imagem não espelhada)
@@ -258,7 +270,7 @@ class HandTracker(
             // modo "controle com bolinhas": não depende do modelo de mãos (se ele não carregou, segue só com o detector de bolinhas)
             if (lm != null) landmarker = lm else builtHands = wantHands
             stage = "pronto"
-            for (h in 0..1) { filters[h].reset(); active[h] = false }
+            for (h in 0..1) { filters[h].reset(); active[h] = false; lastSeenNs[h] = 0L; pinchLatch[h].reset(); priors[h] = HandPrior() }
             ready = true
             busy = false
             st.handState = 2
@@ -417,7 +429,16 @@ class HandTracker(
     }
 
     private fun createLandmarker(): HandLandmarker? {
-        fromAssets = try { ctx.assets.open(MODEL_FILE).close(); true } catch (_: Exception) { false }
+        fromAssets = try {
+            val digest=java.security.MessageDigest.getInstance("SHA-256")
+            var size=0L
+            ctx.assets.open(MODEL_FILE).use { input ->
+                val block=ByteArray(16384)
+                while(true) { val n=input.read(block); if(n<0) break; digest.update(block,0,n); size+=n }
+            }
+            check(size==7819105L && digest.digest().joinToString("") { "%02x".format(it) }=="fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1") { "Modelo de mãos corrompido" }
+            true
+        } catch(e: java.io.FileNotFoundException) { false }
         if (!fromAssets) {
             modelBuf = modelBuffer() ?: return null
         }
@@ -560,7 +581,8 @@ class HandTracker(
         val label: String,
         val score: Float,
         val x0: Float, val y0: Float, val x1: Float, val y1: Float,
-        val depth: Float = 0f
+        val depth: Float = 0f,
+        val estimate: SpatialHandEngine.Estimate? = null
     ) {
         val cx get() = (x0 + x1) * 0.5f
         val cy get() = (y0 + y1) * 0.5f
@@ -612,7 +634,7 @@ class HandTracker(
     private var dotLastNs = 0L
     private var dotLastSeenNs = 0L
     private var dotInit = false
-    private val dotFilter = OneEuro(63, 2.2f, 28f, 1.0f)
+    private val dotFilter = OneEuro(63, 1.6f, 8f, 1.0f)
 
     private fun processDots(j: Job) {
         val now = System.nanoTime()
@@ -647,7 +669,13 @@ class HandTracker(
     private fun process(j: Job) {
         if (st.handSource == 1) { processDots(j); return }
         val lm = landmarker ?: return
-        if (j.w <= 0 || j.h <= 0 || j.y.isEmpty()) return
+        val mode = st.interaction.spatialEngine
+        if (spatialMode != mode || palmWidth != st.interaction.palmWidthMm || sensorFrame != j.sensorPose) {
+            spatialMode=mode; sensorFrame=j.sensorPose; palmWidth=st.interaction.palmWidthMm; spatialEngine.reset(); spatialSamples.fill(null)
+            for(h in 0..1) { active[h]=false; filters[h].reset(); pinchLatch[h].reset() }
+        }
+        val sampleNs = if(mode>0) j.captureNs else j.submitNs
+        if (j.w <= 0 || j.h <= 0 || j.y.isEmpty() || !HandSamplePolicy.fresh(System.nanoTime(), sampleNs)) return
         phase = "converter"
         val half = st.lite || autoHalf
         val bm = if (half) convertHalf(j) else convert(j)
@@ -658,9 +686,9 @@ class HandTracker(
         // intrínsecos da imagem já girada (e reduzida)
         val fx0: Float; val fy0: Float; val cx0: Float; val cy0: Float
         when (j.rot) {
-            90 -> { fx0 = j.fy; fy0 = j.fx; cx0 = j.h - j.cy; cy0 = j.cx }
-            180 -> { fx0 = j.fx; fy0 = j.fy; cx0 = j.w - j.cx; cy0 = j.h - j.cy }
-            270 -> { fx0 = j.fy; fy0 = j.fx; cx0 = j.cy; cy0 = j.w - j.cx }
+            90 -> { fx0 = j.fy; fy0 = j.fx; cx0 = j.h - 1f - j.cy; cy0 = j.cx }
+            180 -> { fx0 = j.fx; fy0 = j.fy; cx0 = j.w - 1f - j.cx; cy0 = j.h - 1f - j.cy }
+            270 -> { fx0 = j.fy; fy0 = j.fx; cx0 = j.cy; cy0 = j.w - 1f - j.cx }
             else -> { fx0 = j.fx; fy0 = j.fy; cx0 = j.cx; cy0 = j.cy }
         }
         val fx = fx0 * sc
@@ -678,7 +706,7 @@ class HandTracker(
         phase = "3D"
 
         val now = System.nanoTime()
-        val tSec = (now - startNs) / 1e9f      // relativo ao início: o Float perde precisão com o tempo desde o boot
+        val tSec = (sampleNs - startNs) / 1e9f      // relativo ao início: o Float perde precisão com o tempo desde o boot
         val n = res.landmarks().size
         lastHands = n
 
@@ -704,8 +732,15 @@ class HandTracker(
                 q += 2
             }
             if (sumP < 4f || sumW < 1e-4f) continue
-            val zc = (((fx + fy) * 0.5f) * (sumW / sumP) * st.handScale).coerceIn(0.10f, 1.4f)
+            val legacyZ = (((fx + fy) * 0.5f) * (sumW / sumP) * st.handScale).coerceIn(0.10f, 1.4f)
 
+            val estimate = if(mode>0) spatialEngine.estimate(
+                FloatArray(63) { c -> val l=nl[c/3]; when(c%3) { 0->l.x();1->l.y();else->l.z() } },
+                FloatArray(63) { c -> val l=wl[c/3]; when(c%3) { 0->l.x();1->l.y();else->l.z() } },
+                ow,oh,fx,fy,cx,cy,st.interaction.palmWidthMm/1000f*st.handScale,
+                if(mode==2) j.rawDepth else null,j.tsNs,j.rot) else null
+            if(mode>0 && estimate==null) continue
+            val zc=estimate?.distance ?: legacyZ
             val out = FloatArray(63)
             var bx0 = 1f; var by0 = 1f; var bx1 = 0f; var by1 = 0f
             for (i in 0 until 21) {
@@ -717,12 +752,13 @@ class HandTracker(
                 if (ny > by1) by1 = ny
                 val u = nx * ow
                 val v = ny * oh
-                val zi = (zc + wl[i].z()).coerceAtLeast(0.05f)
-                val xc = (u - cx) / fx * zi
-                val yc = (v - cy) / fy * zi
+                val zi = estimate?.points?.get(i*3+2) ?: (zc + wl[i].z()).coerceAtLeast(0.05f)
+                val xc = estimate?.points?.get(i*3) ?: ((u - cx) / fx * zi)
+                val yc = estimate?.points?.get(i*3+1) ?: ((v - cy) / fy * zi)
                 // camera (x dir, y baixo, z frente) -> olho OpenGL (x dir, y cima, -z frente) -> cena
-                val ex = xc
-                val ey = -yc
+                // Image rotation changes the image axes, not ARCore's physical camera pose.
+                val ex = if(j.sensorPose) HandSamplePolicy.cameraX(xc,yc,j.rot) else xc
+                val ey = if(j.sensorPose) HandSamplePolicy.cameraY(xc,yc,j.rot) else -yc
                 val ez = -zi
                 out[i * 3] = pose[0] * ex + pose[4] * ey + pose[8] * ez + pose[12]
                 out[i * 3 + 1] = pose[1] * ex + pose[5] * ey + pose[9] * ez + pose[13]
@@ -742,7 +778,7 @@ class HandTracker(
             val ratioMix = 0.5f * (r2 + r3)
             val cat = if (k < hands.size && hands[k].isNotEmpty()) hands[k][0] else null
             raw.add(Det(out, nl[0].x(), ratioMix,
-                cat?.categoryName() ?: "", cat?.score() ?: 0f, bx0, by0, bx1, by1, zc))
+                cat?.categoryName() ?: "", cat?.score() ?: 0f, bx0, by0, bx1, by1, zc, estimate))
         }
 
         // remove duplicatas (a mesma mão detectada duas vezes): sobreposição alta ou centros muito próximos
@@ -751,9 +787,10 @@ class HandTracker(
             var dup = false
             for (e in dets) {
                 val cd = abs(d.cx - e.cx) + abs(d.cy - e.cy)
-                if (iou(d, e) > 0.30f || overlapMin(d, e) > 0.5f || cd < 0.08f) { dup = true; break }
+                if ((iou(d, e) > 0.60f || overlapMin(d, e) > 0.75f || cd < 0.04f) &&
+                    (0..2).sumOf { (d.pts[it]-e.pts[it]).toDouble().let { v -> v*v } } < .0016) { dup = true; break }
             }
-            if (!dup && dets.size < wantHands) dets.add(d)
+            if (!dup && dets.size < wantHands && d.ratio.isFinite() && HandSamplePolicy.plausible(d.pts, null, 0f)) dets.add(d)
         }
         // "mãos fantasma" distantes: uma mão NOVA vista além de 0,8 m não pode ser a do usuário (o CardboardXR descreve o mesmo problema:
         // o detector de palma às vezes acha "mãos" a 0,9-1,7 m). Uma mão que já vinha sendo seguida pode ir mais longe (braço esticado).
@@ -778,13 +815,14 @@ class HandTracker(
             }
             slot[0] = sa
             slot[1] = sb
-            // calibração automática do rótulo: com as duas mãos bem separadas, a da esquerda da imagem é a esquerda
-            if (abs(a.wristU - b.wristU) > 0.2f) {
-                val leftDet = if (a.wristU <= b.wristU) a else b
-                if (leftDet.label.isNotEmpty()) {
-                    swapVotes = (swapVotes + (if (leftDet.label == "Right") 1 else -1)).coerceIn(-20, 20)
-                }
+            // Never recalibrate handedness from horizontal order: crossed hands reverse it.
+            if (active[0] && active[1]) {
+                val direct = HandSamplePolicy.assignment(a.pts,b.pts,prevPts[0],prevPts[1])
+                slot[0]=if(direct) 0 else 1; slot[1]=1-slot[0]
+            } else if (labelSlot(a)>=0 && labelSlot(b)>=0 && labelSlot(a)!=labelSlot(b)) {
+                slot[0]=labelSlot(a); slot[1]=labelSlot(b)
             }
+
         } else if (dets.size == 1) {
             val d = dets[0]
             val c = contSlot(d)
@@ -798,16 +836,27 @@ class HandTracker(
         for (i in dets.indices) {
             val h = slot[i]
             if (h < 0) continue
-            seen[h] = true
             val d = dets[i]
+            val sampleDt = (sampleNs-lastSeenNs[h])/1e9f
+            if (!HandSamplePolicy.plausible(d.pts, if(active[h]) prevPts[h] else null, sampleDt)) continue
+            if (active[h] && sampleNs-lastSeenNs[h]>100_000_000L) {
+                filters[h].reset(); vel[h].fill(0f); pinchLatch[h].reset()
+            }
+            val spatial = d.estimate?.let { spatialEngine.sample(h,d.pts,it,sampleNs) }?.let {
+                if(j.sensorPose) it else it.copy(depthReliable=false)
+            }
+            if(mode>0 && spatial==null) continue
+            spatialSamples[h]=spatial
+            seen[h] = true
+            lastSeenNs[h] = sampleNs
             if (!active[h]) {
-                filters[h].reset(); pinchState[h] = false; vel[h].fill(0f)
+                filters[h].reset(); pinchState[h] = false; vel[h].fill(0f); pinchLatch[h].reset(); priors[h] = HandPrior()
                 ratioOut[h] = 1f; closingS[h] = false; rvF[h] = 0f
                 conf[h] = 0; offCount[h] = 0
             }
             if (conf[h] < 10) conf[h]++
             val dtH = (tSec - prevT[h]).coerceAtLeast(1e-3f)
-            priors[h].enforce(d.pts, d.score > 0.6f && d.ratio > 0.55f)          // ossos com comprimento real + articulações sem dobra impossível
+            if(mode==0) priors[h].enforce(d.pts, d.score > 0.6f && d.ratio > 0.55f)          // ossos com comprimento real + articulações sem dobra impossível
             filters[h].apply(d.pts, tSec)
             if (active[h]) {
                 for (c in 0..2) {
@@ -823,24 +872,7 @@ class HandTracker(
             ratioOut[h] = 0.7f * d.ratio + 0.3f * oldR
             if (active[h]) rvF[h] = 0.5f * rvF[h] + 0.5f * ((ratioOut[h] - oldR) / dtH)
             val rr = ratioOut[h]
-            if (pinchState[h]) {
-                if (rr < pinchMin[h]) pinchMin[h] = rr
-                val thr = (pinchMin[h] + 0.15f).coerceIn(PINCH_REL_MIN, PINCH_REL_MAX)
-                if (rr > thr) {
-                    offCount[h]++
-                    // abrindo de propósito (razão subindo rápido): solta no 1º quadro; senão confirma em 2
-                    val need = if (rvF[h] > 0.4f) 1 else 2
-                    if (offCount[h] >= need) pinchState[h] = false
-                } else {
-                    offCount[h] = 0
-                }
-            } else {
-                offCount[h] = 0
-                if (rr < PINCH_ON) {
-                    pinchState[h] = true
-                    pinchMin[h] = rr
-                }
-            }
+            pinchState[h] = pinchLatch[h].update(rr, true, sampleNs / 1_000_000L, st.interaction.pinchThreshold)
             // "fechando": a razão está caindo RÁPIDO (pinça a caminho); mão relaxada não dispara
             if (!closingS[h]) {
                 if (ratioOut[h] < 0.95f && rvF[h] < -0.9f) closingS[h] = true
@@ -850,12 +882,12 @@ class HandTracker(
             active[h] = true
         }
 
-        if (seen[0] || seen[1]) lastSeenNs = now
         for (h in 0..1) {
             // mão FECHADA (pinça/punho) some do detector por instantes: segura a pose um pouco mais para o trigger não soltar sozinho
-            val holdNs = if (pinchState[h] || ratioOut[h] < 0.55f) 450_000_000L else 200_000_000L
-            if (!seen[h] && active[h] && now - lastSeenNs > holdNs) {
+            val holdNs = HandSamplePolicy.MAX_AGE_NS
+            if (!seen[h] && active[h] && now - lastSeenNs[h] > holdNs) {
                 active[h] = false
+                pinchLatch[h].reset()
                 conf[h] = 0
                 pinchState[h] = false
                 closingS[h] = false
@@ -864,14 +896,14 @@ class HandTracker(
             }
         }
 
-        val valid = BooleanArray(2) { active[it] && conf[it] >= 2 }
+        val valid = BooleanArray(2) { active[it] && conf[it] >= 2 && HandSamplePolicy.fresh(System.nanoTime(),lastSeenNs[it]) }
         val pts = Array(2) { prevPts[it].copyOf() }
-        val vels = Array(2) { vel[it].copyOf() }
+        val vels = Array(2) { if(seen[it]) vel[it].copyOf() else FloatArray(3) }
         val pinch = BooleanArray(2) { valid[it] && pinchState[it] }
         val ratios = FloatArray(2) { ratioOut[it] }
         val closing = BooleanArray(2) { valid[it] && closingS[it] }
         val latNs = (System.nanoTime() - j.submitNs).coerceIn(0L, 400_000_000L)
-        latest = HandsFrame(valid, pts, vels, pinch, ratios, closing, latNs, now)
+        latest = HandsFrame(valid, pts, vels, pinch, ratios, closing, latNs, now, lastSeenNs.copyOf(), seen, Array(2) { if(valid[it]) spatialSamples[it] else null })
         st.handState = if (valid[0] || valid[1]) 3 else 2
     }
 }

@@ -451,6 +451,8 @@ class VrRenderer(
     private var bgPos = 0
     private var bgUvLoc = 0
     private var bgSampler = 0
+    private var bgZoom = 0
+    private var eyeCameraZoom=1f
 
     private val tcIn = floatArrayOf(0.5f, 0.5f, 0.6f, 0.5f, 0.5f, 0.6f)
     private val tcOut = FloatArray(6)
@@ -478,27 +480,30 @@ class VrRenderer(
     }
 
     /** Matriz olho->cena a partir da pose do ARCore (mesma transformação usada na posição da cabeça). */
-    private fun eyeToSceneFromAr(out: FloatArray) {
+    private fun eyeToSceneFromAr(out: FloatArray, sensorMatrix: FloatArray) {
         val a = heading0 - yawOff
         val c = cos(a)
         val sn = sin(a)
         for (col in 0..2) {
-            val mx = arM[col * 4]
-            val my = -arM[col * 4 + 2]
-            val mz = arM[col * 4 + 1]
+            val mx = sensorMatrix[col * 4]
+            val my = -sensorMatrix[col * 4 + 2]
+            val mz = sensorMatrix[col * 4 + 1]
             out[col * 4] = mx * c - my * sn
             out[col * 4 + 1] = mx * sn + my * c
             out[col * 4 + 2] = mz
             out[col * 4 + 3] = 0f
         }
-        val dx = arM[12] - raw0[0]
-        val dy = -arM[14] - raw0[1]
-        val dz = arM[13] - raw0[2]
+        val dx = sensorMatrix[12] - raw0[0]
+        val dy = -sensorMatrix[14] - raw0[1]
+        val dz = sensorMatrix[13] - raw0[2]
         out[12] = dx * c - dy * sn
         out[13] = dx * sn + dy * c
         out[14] = dz
         out[15] = 1f
     }
+
+    private val handSensorPose=FloatArray(16)
+    private val rawDepthReader=RawHandDepthReader()
 
     private fun submitHandFrame(
         frame: com.google.ar.core.Frame,
@@ -510,17 +515,24 @@ class VrRenderer(
         try {
             val im = frame.acquireCameraImage()
             img = im
+            if(kotlin.math.abs(im.timestamp-frame.timestamp)>5_000_000L) return
             val rot = imageRotation(frame)
+            frame.camera.pose.toMatrix(handSensorPose,0)
             tr.submit { j ->
                 j.copyFrom(im)
-                if (useArPose) eyeToSceneFromAr(j.pose) else Matrix.invertM(j.pose, 0, view, 0)
+                if (useArPose) eyeToSceneFromAr(j.pose,handSensorPose) else Matrix.invertM(j.pose, 0, view, 0)
                 j.fx = intr.focalLength[0]
                 j.fy = intr.focalLength[1]
                 j.cx = intr.principalPoint[0]
                 j.cy = intr.principalPoint[1]
                 j.rot = rot
-                j.tsNs = frame.timestamp
+                j.sensorPose = useArPose
+                j.tsNs = im.timestamp
                 j.submitNs = System.nanoTime()
+                val cameraAge=SystemClock.elapsedRealtimeNanos()-im.timestamp
+                j.captureNs=if(cameraAge in 0..220_000_000L) j.submitNs-cameraAge else 0L
+                j.rawDepth=if(st.interaction.spatialEngine==2 && st.depthEnabled) rawDepthReader.acquire(frame) else null
+                if(st.depthEnabled) st.depthStatus=rawDepthReader.status
             }
             camErr = ""
         } catch (e: Exception) {
@@ -539,18 +551,24 @@ class VrRenderer(
         val a = 1f - exp(-dt * 38f)
         synchronized(st.handLock) {
             for (h in 0..1) {
-                val ok = f != null && f.valid[h] && (now - f.arrivalNs) < 300_000_000L
+                val ok = f != null && f.valid[h] && HandSamplePolicy.fresh(now, f.sampleNs[h])
                 st.handValid[h] = ok
+                st.handObserved[h] = ok && f!!.observed[h]
+                st.handSpatial[h] = if(ok) f!!.spatial[h]?.let { sample ->
+                    if(now-sample.timestampNs>80_000_000L) sample.copy(depthReliable=false) else sample
+                } else null
                 st.handPinch[h] = ok && f!!.pinch[h]
                 st.handRatio[h] = if (ok) f!!.ratio[h] else 1f
                 st.handClosing[h] = ok && f!!.closing[h]
                 if (!ok) {
-                    hRenderInit[h] = false
+                    // Keep the visual filter for a short tracking gap; input remains invalid.
+                    // This prevents a jump on quick re-detection without synthesizing new hand poses.
+                    if (!HandRenderRecovery.shouldBlend(hRenderLastObservedNs[h], now)) hRenderInit[h] = false
                     continue
                 }
+                if (f!!.observed[h]) hRenderLastObservedNs[h] = now
                 // atraso real: processamento do rastreador + (fora do modo câmera) latência da câmera
-                val camLat = if (st.passthrough) 0f else arLatNs / 1e9f
-                val age = ((((now - f!!.arrivalNs) + f.latNs) / 1e9f + camLat) * 0.8f).coerceIn(0f, 0.14f)
+                val age = if (f!!.observed[h]) HandSamplePolicy.predictionSeconds(now, f.sampleNs[h], f.latNs) else 0f
                 val src = f.pts[h]
                 val v = f.vel[h]
                 val dst = st.handPts[h]
@@ -558,7 +576,8 @@ class VrRenderer(
                 for (i in 0 until 21) {
                     for (c in 0..2) {
                         val k = i * 3 + c
-                        val t = src[k] + v[c] * age
+                        val t = src[k] + (v[c] * age).coerceIn(-.015f,.015f)
+                        st.handInputPts[h][k] = src[k]
                         if (!hRenderInit[h]) r[k] = t else r[k] += (t - r[k]) * a
                         dst[k] = r[k]
                     }
@@ -706,6 +725,7 @@ class VrRenderer(
         bgPos = GLES20.glGetAttribLocation(bgProg, "aPos")
         bgUvLoc = GLES20.glGetAttribLocation(bgProg, "aUV")
         bgSampler = GLES20.glGetUniformLocation(bgProg, "uTexture")
+        bgZoom = GLES20.glGetUniformLocation(bgProg, "uZoom")
         bgReady = false
 
         handProg = program(HAND_VS, HAND_FS)
@@ -885,6 +905,7 @@ class VrRenderer(
     private var lastHandsNs = 0L
     private val hRender = Array(2) { FloatArray(63) }
     private val hRenderInit = BooleanArray(2)
+    private val hRenderLastObservedNs = LongArray(2)
 
     override fun onDrawFrame(gl: GL10?) {
         updateWorkspaceTextures()
@@ -934,6 +955,8 @@ class VrRenderer(
             drawFullscreen(); return
         }
         updateHead()
+        // Snapshot once: both eyes use identical crop even if preferences change on the UI thread.
+        eyeCameraZoom=CameraZoom.effective(st.interaction.cameraZoom,st.passthrough && bgReady,st.fullscreen)
 
         // com distorção de lente ligada os olhos vão para um alvo fora da tela e depois passam pelo shader da lente
         val lens = st.stereo && lensFbo != 0 && (st.k1 > 0.005f || st.k2 > 0.005f)
@@ -1097,6 +1120,7 @@ class VrRenderer(
         GLES20.glViewport(x, y, w, h)
         if (st.passthrough && bgReady && !cameraFallback) System.arraycopy(arProj, 0, proj, 0, 16)
         else Matrix.perspectiveM(proj, 0, fov, w.toFloat() / h, 0.05f, 60f)
+        CameraZoom.applyProjection(proj,eyeCameraZoom)
         Matrix.setIdentityM(tr, 0)
         tr[12] = shift
         Matrix.multiplyMM(eyeView, 0, tr, 0, view, 0)
@@ -1113,6 +1137,7 @@ class VrRenderer(
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, if(cameraFallback) fallbackTexId else arTexId)
         GLES20.glUniform1i(bgSampler, 0)
+        GLES20.glUniform1f(bgZoom,eyeCameraZoom)
         GLES20.glEnableVertexAttribArray(bgPos)
         GLES20.glEnableVertexAttribArray(bgUvLoc)
         bgPosBuf.position(0)
@@ -1290,6 +1315,7 @@ class VrRenderer(
             val base = if (h == 0) cHandL else cHandR
             GLES20.glUniform4fv(hColor, 1, base, 0)
 
+            if (st.interaction.handStyle == 0) {
             // palma com espessura: duas camadas deslocadas ao longo da normal
             palmBuf.position(0)
             for (layer in 0..1) {
@@ -1316,6 +1342,8 @@ class VrRenderer(
             Matrix.setIdentityM(model, 0)
             drawMesh(palmBuf, 24)
 
+            }
+            if (st.interaction.handStyle < 2) {
             // ossos dos dedos (afinando) e ossos da palma (mais grossos)
             var b = 0
             while (b < bones.size) {
@@ -1337,12 +1365,13 @@ class VrRenderer(
             // (sem antebraço/cotoco: só a mão é desenhada)
 
             // articulações (arredondam as dobras)
-            for (i in 1 until 21) {
+            if (st.interaction.handStyle == 0) for (i in 1 until 21) {
                 if (handPin[h] && (i == 4 || i == 8)) continue
                 if (i == 12 || i == 16 || i == 20) continue                  // pontas já arredondadas pelo afinamento do osso
                 drawSphere(p[i * 3], p[i * 3 + 1], p[i * 3 + 2], jointR[i] * 1.06f)
             }
 
+            }
             // pontas verdes quando pinçando
             if (handPin[h]) {
                 GLES20.glUniform4fv(hColor, 1, cPinch, 0)
@@ -1351,10 +1380,11 @@ class VrRenderer(
             }
             // bolinha = cursor: o objeto que ela cobre (visto do seu olho) é o selecionado
             if (st.handLasers) {
-                // a bolinha fica SEMPRE no meio da pinça real (mesmos dados que desenham os dedos)
-                val tx = (p[12] + p[24]) / 2
-                val ty = (p[13] + p[25]) / 2
-                val tz = (p[14] + p[26]) / 2
+                // Indicator mode follows landmark 8; classic mode keeps the pinch midpoint.
+                val index=st.handSource==0 && st.interaction.handMode!=InteractionSettings.PINCH
+                val tx = if(index) p[24] else (p[12] + p[24]) / 2
+                val ty = if(index) p[25] else (p[13] + p[25]) / 2
+                val tz = if(index) p[26] else (p[14] + p[26]) / 2
                 // suavização da bolinha (barra "Suavização da bolinha"): 0 = cola no meio dos dedos; 1 = bem suave
                 val bnow = System.nanoTime()
                 val bdt = if (lastBallNs == 0L || bnow - lastBallNs > 200_000_000L) 0.016f else ((bnow - lastBallNs) / 1e9f).coerceIn(0.001f, 0.1f)
@@ -1370,7 +1400,7 @@ class VrRenderer(
                 ballColor[0] = 1f - 0.7f * t
                 ballColor[1] = 1f
                 ballColor[2] = 1f - 0.45f * t
-                ballColor[3] = 1f
+                ballColor[3] = st.interaction.indicatorIntensity
                 GLES20.glUniform4fv(hColor, 1, ballColor, 0)
                 drawSphere(bx, by, bz, 0.0058f + 0.0014f * t)          // bolinha menor (antes ~1 cm)
             }
@@ -1411,10 +1441,13 @@ class VrRenderer(
             val t=workspaceTextures[screen.id] ?: continue
             val p=screen.pose; val g=p.win
             GLES20.glUseProgram(surfColor.p)
-            if(screen.id == ws.selectedId) GLES20.glUniform4f(surfColor.uColor,.18f,.75f,.88f,ws.uiOpacity)
+            if(screen.id == ws.hoverId || screen.id == ws.selectedId) GLES20.glUniform4f(surfColor.uColor,.18f,.75f,.88f,ws.uiOpacity)
             else GLES20.glUniform4f(surfColor.uColor,.035f,.065f,.09f,ws.uiOpacity)
             drawSurf(surfColor,g.cx,g.cz,g.w+.045f,g.h+.045f,-.012f,p)
-            drawSurf(surfColor,g.cx,g.cz+g.h/2f+.05f,g.w,.075f,0f,p)
+            if(!screen.locked) {
+                drawSurf(surfColor,p.bar.cx,p.bar.cz,p.bar.w,p.bar.h,.006f,p)
+                for(c in 0..3) drawSurf(surfColor,p.cornerS(c),p.cornerZ(c),p.handle()*2,p.handle()*2,.008f,p)
+            }
             GLES20.glUseProgram(surfExt.p)
             GLES20.glUniformMatrix4fv(surfExt.uTex,1,false,t.matrix,0)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -1423,9 +1456,15 @@ class VrRenderer(
             drawSurf(surfExt,g.cx,g.cz,g.w,g.h,0f,p)
             if(ws.hoverId==screen.id) {
                 GLES20.glUseProgram(surfColor.p)
-                GLES20.glUniform4f(surfColor.uColor,.65f,.96f,1f,.95f)
+                val owner=st.fingertipTargetId.indexOf(screen.id)
+                val phase=if(owner>=0) st.fingertipPhase[owner] else FingertipGesture.Phase.HOVER
+                if(phase==FingertipGesture.Phase.RESIZING) GLES20.glUniform4f(surfColor.uColor,1f,.65f,.2f,1f)
+                else if(phase==FingertipGesture.Phase.DRAGGING) GLES20.glUniform4f(surfColor.uColor,.25f,1f,.7f,1f)
+                else if(st.clickSentAt.any { SystemClock.uptimeMillis()-it in 0L..160L }) GLES20.glUniform4f(surfColor.uColor,.25f,1f,.4f,1f)
+                else GLES20.glUniform4f(surfColor.uColor,.65f,.96f,1f,.95f)
                 val cursor=p.width*.009f
                 drawSurf(surfColor,ws.hoverS,ws.hoverZ,cursor,cursor,.014f,p)
+                drawDwell(ws.hoverS,ws.hoverZ,p,stateProgress())
             }
         }
     }
@@ -1478,16 +1517,12 @@ class VrRenderer(
         // cantos (estilo Quest: dois traços em L, só aparecem quando você aponta para a tela) + barra de mover
         GLES20.glUseProgram(surfColor.p)
         val hs = st.handle()
-        val near = !hidden && (ui.menuOpen || st.hoverKind[0] == Hit.WIN || st.hoverKind[1] == Hit.WIN || st.hoverKind[0] == Hit.CORNER ||
+        val near = !hidden && ((st.handsOn && st.interaction.handMode==InteractionSettings.INDICATOR) || ui.menuOpen || st.hoverKind[0] == Hit.WIN || st.hoverKind[1] == Hit.WIN || st.hoverKind[0] == Hit.CORNER ||
             st.hoverKind[1] == Hit.CORNER || st.hoverKind[0] == Hit.BAR || st.hoverKind[1] == Hit.BAR)
         if (near) for (c in 0..3) {
             val hot = (st.hoverKind[0] == Hit.CORNER && st.hoverIdx[0] == c) || (st.hoverKind[1] == Hit.CORNER && st.hoverIdx[1] == c)
             GLES20.glUniform4fv(surfColor.uColor, 1, if (hot) cHandleHot else cHandle, 0)
-            val sx = if (c % 2 == 0) -1f else 1f; val sz = if (c < 2) 1f else -1f
-            val cs = g.cx + sx * (g.w / 2f); val cz = g.cz + sz * (g.h / 2f)
-            val t = hs * (if (hot) 0.42f else 0.30f); val l = hs * 1.7f
-            drawSurf(surfColor, cs + sx * (t - l) / 2f, cz + sz * t / 2f, l + t, t, 0.006f)           // braço horizontal do "L"
-            drawSurf(surfColor, cs + sx * t / 2f, cz + sz * (t - l) / 2f, t, l + t, 0.006f)           // braço vertical do "L"
+            drawSurf(surfColor,st.cornerS(c),st.cornerZ(c),hs*2,hs*2,.008f)
         }
         if (!hidden) {
             val b = st.bar
@@ -1504,15 +1539,25 @@ class VrRenderer(
         drawSurf(surfUi, st.tb.cx, st.tb.cz, st.tb.w, st.tb.h, 0.002f)
 
         // painel de diagnóstico das mãos (acima da janela)
-        if (st.handsOn && ui.menuOpen && !hidden) {              // textos de diagnóstico: só com o Menu aberto
+        if ((st.handsOn || cameraFallback) && !hidden && (ui.menuOpen || !st.handValid.any { it })) {              // textos de diagnóstico: só com o Menu aberto
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ui.status.texId)
             val sw = minOf(st.win.w, 3.2f)
             val sh = sw * 120f / 1400f
-            drawSurf(surfUi, st.wx, st.win.cz + st.win.h / 2f + sh / 2f + 0.05f, sw, sh, 0.002f)
+            drawSurf(surfUi, st.wx, st.bar.cz + st.bar.h/2f + sh/2f + 0.05f, sw, sh, 0.002f)
         }
     }
 
     // ---------- lasers ----------
+    private fun stateProgress() = maxOf(st.dwellProgress[0],st.dwellProgress[1])
+    private fun drawDwell(s: Float,z: Float,pose: VrState,progress: Float) {
+        if(progress<=0f) return
+        GLES20.glUniform4f(surfColor.uColor,.3f,1f,.75f,st.interaction.indicatorIntensity)
+        val radius=pose.width*.014f
+        for(segment in 0 until (progress*24).toInt()) {
+            val angle=segment*(2f*PI.toFloat()/24)
+            drawSurf(surfColor,s+cos(angle)*radius,z+sin(angle)*radius,radius*.18f,radius*.18f,.018f,pose)
+        }
+    }
     private fun drawLasers() {
         GLES20.glUseProgram(roomProg)
         for (i in 0..1) {
@@ -1525,7 +1570,11 @@ class VrRenderer(
             val ty = st.hitY[i]
             val tz = st.hitZ[i]
 
-            val color = if (pressed) cPressed else if (left) cLaserL else cLaserR
+            val phase=st.fingertipPhase[i]
+            val color = if(SystemClock.uptimeMillis()-st.clickSentAt[i] in 0L..160L) cPinch
+                else if(pressed || phase==FingertipGesture.Phase.DRAGGING || phase==FingertipGesture.Phase.RESIZING || phase==FingertipGesture.Phase.ARMED) cPressed
+                else if(st.fingertipOwned[i] && !st.fingertipPointing[i]) cWand
+                else if (left) cLaserL else cLaserR
             if (!st.laserHand[i]) drawBeam(ox, oy, oz, tx, ty, tz, if (pressed) 0.012f else 0.006f, color)
 
             if (!st.laserHand[i]) {
@@ -1541,11 +1590,12 @@ class VrRenderer(
                 val kr = st.kbRot
                 basis(kr[0], kr[3], kr[6], kr[2], kr[5], kr[8], -kr[1], -kr[4], -kr[7], tx + kr[1] * 0.01f, ty + kr[4] * 0.01f, tz + kr[7] * 0.01f, ds * 0.6f, ds * 0.6f)
                 quadRoom(color, 8f, 1f, 1f)
-            } else {
+            } else if(!(workspace?.enabled==true && st.hoverKind[i]==Hit.NONE && workspace?.hoverId!=null)) {
                 // ponto sobre a superfície (curva ou plana)
                 GLES20.glUseProgram(surfColor.p)
                 GLES20.glUniform4fv(surfColor.uColor, 1, color, 0)
                 drawSurf(surfColor, st.ax[i], st.az[i], ds, ds, 0.012f)
+                drawDwell(st.ax[i],st.az[i],st,st.dwellProgress[i])
                 GLES20.glUseProgram(roomProg)
             }
         }
@@ -1901,10 +1951,11 @@ class VrRenderer(
         private const val BG_VS = """
             attribute vec2 aPos;
             attribute vec2 aUV;
+            uniform float uZoom;
             varying vec2 vUV;
             void main() {
                 vUV = aUV;
-                gl_Position = vec4(aPos, 0.0, 1.0);
+                gl_Position = vec4(aPos * uZoom, 0.0, 1.0);
             }
         """
         private const val BG_FS = """
