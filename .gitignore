@@ -1,0 +1,7 @@
+# Workspace MR local tools and generated artifacts (upstream tracked files are unchanged).
+**/__pycache__/
+Source/android/local.properties
+Source/android/.gradle/
+Source/android/**/build/
+Source/android/**/.cxx/
+*.apk

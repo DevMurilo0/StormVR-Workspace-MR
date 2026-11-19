@@ -637,6 +637,31 @@ class VrRenderer(
     private var uiProg = 0
     private var uPos = 0; private var uMvp = 0; private var uSampler = 0
 
+    @Volatile var cameraFallback = false
+    var fallbackOrientation = 90
+    var fallbackAspect=16f/9f
+    var onFallbackTexture: ((SurfaceTexture) -> Unit)? = null
+    private var fallbackTexId=0
+    private var fallbackTexture: SurfaceTexture? = null
+    private val fallbackFrame = AtomicBoolean(false)
+    private val fallbackMatrix=FloatArray(16)
+    var workspace: WorkspaceManager? = null
+    var onWorkspaceSurface: ((VirtualScreen, Surface?) -> Unit)? = null
+    private class WorkspaceTexture(val screen: VirtualScreen,val id: Int, val texture: SurfaceTexture, val surface: Surface) {
+        val pending = AtomicBoolean(false)
+        val matrix = FloatArray(16).also { Matrix.setIdentityM(it,0) }
+    }
+    private val workspaceTextures = mutableMapOf<String, WorkspaceTexture>()
+    var onVideoSurface: ((Surface, () -> Unit) -> Unit)? = null
+    @Volatile var directVideo = false
+    @Volatile var videoFrames = 0L
+        private set
+    private var videoTexId = 0
+    private var videoTexture: SurfaceTexture? = null
+    private var videoSurface: Surface? = null
+    private val videoFrame = AtomicBoolean(false)
+    private val videoMatrix = FloatArray(16).also { Matrix.setIdentityM(it, 0) }
+    private var videoReady = false
     private var texId = 0
     private var surfaceTex: SurfaceTexture? = null
     private var surface: Surface? = null
@@ -658,6 +683,8 @@ class VrRenderer(
     private val cFrame = floatArrayOf(0.02f, 0.02f, 0.03f, 1f)
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+        workspaceTextures.values.forEach { it.surface.release(); it.texture.release() }
+        workspaceTextures.clear()
         roomProg = program(ROOM_VS, ROOM_FS)
         rPos = GLES20.glGetAttribLocation(roomProg, "aPos")
         rVP = GLES20.glGetUniformLocation(roomProg, "uVP")
@@ -700,11 +727,19 @@ class VrRenderer(
         ui.status.initTexture()
 
         val ext = GLES11Ext.GL_TEXTURE_EXTERNAL_OES
-        val t = IntArray(2)
-        GLES20.glGenTextures(2, t, 0)
+        val t = IntArray(4)
+        GLES20.glGenTextures(4, t, 0)
         texId = t[0]
         arTexId = t[1]
+        videoTexId = t[2]
         arTexSet = false
+        fallbackTexture?.release()
+        fallbackTexId=t[3]
+        fallbackTexture=SurfaceTexture(fallbackTexId).also { texture ->
+            texture.setDefaultBufferSize(1280,720)
+            texture.setOnFrameAvailableListener { fallbackFrame.set(true) }
+            onFallbackTexture?.invoke(texture)
+        }
         for (id in t) {
             GLES20.glBindTexture(ext, id)
             GLES20.glTexParameteri(ext, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
@@ -721,10 +756,30 @@ class VrRenderer(
         surfaceTex = stex
         surface = Surface(stex)
         onSurface(surface)
+        val oldVideoSurface=videoSurface
+        val oldVideoTexture=videoTexture
+        videoReady = false
+        videoFrame.set(false)
+        videoTexture = SurfaceTexture(videoTexId).also { texture ->
+            texture.setDefaultBufferSize(1280, 720)
+            texture.setOnFrameAvailableListener { videoFrame.set(true) }
+            videoSurface = Surface(texture).also { output ->
+                val retire = { oldVideoSurface?.release(); oldVideoTexture?.release(); Unit }
+                val callback=onVideoSurface
+                if(callback != null) callback(output,retire) else retire()
+            }
+        }
 
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
         GLES20.glEnable(GLES20.GL_BLEND)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+    }
+
+    fun releaseSurfaces() {
+        surface?.release(); surfaceTex?.release()
+        videoSurface?.release(); videoTexture?.release(); fallbackTexture?.release()
+        workspaceTextures.values.forEach { it.surface.release(); it.texture.release() }
+        workspaceTextures.clear()
     }
 
     override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
@@ -785,9 +840,9 @@ class VrRenderer(
         }
         GLES20.glUseProgram(fsProg)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, if (directVideo && videoReady) videoTexId else texId)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(fsProg, "uTexture"), 0)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(fsProg, "uTex"), 1, false, texMat, 0)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(fsProg, "uTex"), 1, false, if (directVideo && videoReady) videoMatrix else texMat, 0)
         GLES20.glUniform2f(GLES20.glGetUniformLocation(fsProg, "uScale"), sx, sy)
         val aPos = GLES20.glGetAttribLocation(fsProg, "aPos")
         lensQuad.position(0)
@@ -832,6 +887,31 @@ class VrRenderer(
     private val hRenderInit = BooleanArray(2)
 
     override fun onDrawFrame(gl: GL10?) {
+        updateWorkspaceTextures()
+        if(cameraFallback && fallbackFrame.getAndSet(false)) {
+            fallbackTexture?.updateTexImage(); fallbackTexture?.getTransformMatrix(fallbackMatrix)
+            val displayDegrees=when(st.rotation) { Surface.ROTATION_90 -> 90; Surface.ROTATION_180 -> 180; Surface.ROTATION_270 -> 270; else -> 0 }
+            val angle=Math.toRadians((fallbackOrientation-displayDegrees).toDouble())
+            val c=cos(angle).toFloat(); val s=sin(angle).toFloat()
+            val rotated=if(kotlin.math.abs(s)>.5f) 1f/fallbackAspect else fallbackAspect
+            val viewAspect=width.toFloat()/(if(st.stereo) 2f else 1f)/height.coerceAtLeast(1)
+            val cropX=minOf(1f,viewAspect/rotated); val cropY=minOf(1f,rotated/viewAspect)
+            val uv=floatArrayOf(0f,0f,1f,0f,0f,1f,1f,1f)
+            for(i in 0..3) {
+                val x=(uv[i*2]-.5f)*cropX; val y=(uv[i*2+1]-.5f)*cropY
+                val u=.5f+c*x-s*y; val v=.5f+s*x+c*y
+                bgUv[i*2]=fallbackMatrix[0]*u+fallbackMatrix[4]*v+fallbackMatrix[12]
+                bgUv[i*2+1]=fallbackMatrix[1]*u+fallbackMatrix[5]*v+fallbackMatrix[13]
+            }
+            bgUvBuf.position(0); bgUvBuf.put(bgUv); bgUvBuf.position(0)
+            bgReady=true
+        }
+        if (videoFrame.getAndSet(false)) {
+            videoFrames++
+            videoTexture?.updateTexImage()
+            videoTexture?.getTransformMatrix(videoMatrix)
+            videoReady = true
+        }
         if (st.trackOnly) {                                   // "Iniciar rastreamento": só sensores/ARCore/mãos, sem desenhar a sala
             if (frameAvailable.getAndSet(false)) surfaceTex?.updateTexImage()
             updateHead()
@@ -1015,7 +1095,7 @@ class VrRenderer(
 
     private fun renderEye(x: Int, y: Int, w: Int, h: Int, shift: Float, fov: Float) {
         GLES20.glViewport(x, y, w, h)
-        if (st.passthrough && bgReady) System.arraycopy(arProj, 0, proj, 0, 16)
+        if (st.passthrough && bgReady && !cameraFallback) System.arraycopy(arProj, 0, proj, 0, 16)
         else Matrix.perspectiveM(proj, 0, fov, w.toFloat() / h, 0.05f, 60f)
         Matrix.setIdentityM(tr, 0)
         tr[12] = shift
@@ -1031,7 +1111,7 @@ class VrRenderer(
         GLES20.glDepthMask(false)
         GLES20.glUseProgram(bgProg)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, arTexId)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, if(cameraFallback) fallbackTexId else arTexId)
         GLES20.glUniform1i(bgSampler, 0)
         GLES20.glEnableVertexAttribArray(bgPos)
         GLES20.glEnableVertexAttribArray(bgUvLoc)
@@ -1047,6 +1127,7 @@ class VrRenderer(
     private fun drawScene() {
         if (st.passthrough) drawBackground() else drawRoom()
         drawBrowserWindow()
+        drawWorkspaceScreens()
 
         // ----- teclado (plano, flutuando na frente) -----
         if (st.kbVisible) {
@@ -1296,15 +1377,68 @@ class VrRenderer(
         }
     }
 
+    private fun updateWorkspaceTextures() {
+        val screens = workspace?.takeIf { it.enabled }?.screens ?: emptyList()
+        val ids = screens.map { it.id }.toSet()
+        val iter = workspaceTextures.iterator()
+        while(iter.hasNext()) {
+            val (id,t) = iter.next()
+            if (id !in ids || screens.none { it === t.screen }) { t.surface.release(); t.texture.release(); GLES20.glDeleteTextures(1,intArrayOf(t.id),0); iter.remove() }
+        }
+        for (screen in screens) {
+            val t = workspaceTextures.getOrPut(screen.id) {
+                val ids0=IntArray(1); GLES20.glGenTextures(1,ids0,0)
+                GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,ids0[0])
+                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_MIN_FILTER,GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_MAG_FILTER,GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_WRAP_S,GLES20.GL_CLAMP_TO_EDGE)
+                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_WRAP_T,GLES20.GL_CLAMP_TO_EDGE)
+                val texture=SurfaceTexture(ids0[0]); texture.setDefaultBufferSize(VrState.TEX_W,VrState.TEX_H)
+                WorkspaceTexture(screen,ids0[0],texture,Surface(texture)).also { t0 ->
+                    texture.setOnFrameAvailableListener { t0.pending.set(true) }
+                    onWorkspaceSurface?.invoke(screen,t0.surface)
+                }
+            }
+            // Drain even hidden displays, avoiding producer backpressure.
+            if(t.pending.getAndSet(false)) { t.texture.updateTexImage(); t.texture.getTransformMatrix(t.matrix) }
+        }
+    }
+
+    private fun drawWorkspaceScreens() {
+        val ws=workspace?.takeIf { it.enabled } ?: return
+        for (screen in ws.screens) {
+            if(!screen.visible) continue
+            val t=workspaceTextures[screen.id] ?: continue
+            val p=screen.pose; val g=p.win
+            GLES20.glUseProgram(surfColor.p)
+            if(screen.id == ws.selectedId) GLES20.glUniform4f(surfColor.uColor,.18f,.75f,.88f,ws.uiOpacity)
+            else GLES20.glUniform4f(surfColor.uColor,.035f,.065f,.09f,ws.uiOpacity)
+            drawSurf(surfColor,g.cx,g.cz,g.w+.045f,g.h+.045f,-.012f,p)
+            drawSurf(surfColor,g.cx,g.cz+g.h/2f+.05f,g.w,.075f,0f,p)
+            GLES20.glUseProgram(surfExt.p)
+            GLES20.glUniformMatrix4fv(surfExt.uTex,1,false,t.matrix,0)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,t.id)
+            GLES20.glUniform1i(surfExt.uTexture,0)
+            drawSurf(surfExt,g.cx,g.cz,g.w,g.h,0f,p)
+            if(ws.hoverId==screen.id) {
+                GLES20.glUseProgram(surfColor.p)
+                GLES20.glUniform4f(surfColor.uColor,.65f,.96f,1f,.95f)
+                val cursor=p.width*.009f
+                drawSurf(surfColor,ws.hoverS,ws.hoverZ,cursor,cursor,.014f,p)
+            }
+        }
+    }
+
     // ---------- janela do navegador (curva ou plana) ----------
     private val xfA = FloatArray(9)
     private val xfB = FloatArray(3)
     private val xfM = FloatArray(9)
-    private fun drawSurf(p: SurfProg, s0: Float, z0: Float, w: Float, h: Float, depth: Float) {
+    private fun drawSurf(p: SurfProg, s0: Float, z0: Float, w: Float, h: Float, depth: Float, pose: VrState = st) {
         GLES20.glUniformMatrix4fv(p.uVP, 1, false, vp, 0)
         GLES20.glUniform4f(p.uRect, s0, z0, w, h)
-        GLES20.glUniform3f(p.uOrg, st.wx, st.distance, st.curveK())
-        st.screenXf(xfA, xfB)                                            // órbita + giro da tela (3 eixos)
+        GLES20.glUniform3f(p.uOrg, pose.wx, pose.distance, pose.curveK())
+        pose.screenXf(xfA, xfB)                                            // órbita + giro da tela (3 eixos)
         for (r in 0..2) for (c in 0..2) xfM[c * 3 + r] = xfA[r * 3 + c]   // row-major -> column-major do GL
         GLES20.glUniformMatrix3fv(p.uSA, 1, false, xfM, 0)
         GLES20.glUniform3f(p.uSB, xfB[0], xfB[1], xfB[2])
@@ -1330,13 +1464,13 @@ class VrRenderer(
             Matrix.setIdentityM(sbsTex, 0)
             sbsTex[0] = 0.5f
             sbsTex[12] = 0.5f * curEye
-            Matrix.multiplyMM(tmpTexMat, 0, texMat, 0, sbsTex, 0)
+            Matrix.multiplyMM(tmpTexMat, 0, if (directVideo && videoReady) videoMatrix else texMat, 0, sbsTex, 0)
             GLES20.glUniformMatrix4fv(surfExt.uTex, 1, false, tmpTexMat, 0)
         } else {
-            GLES20.glUniformMatrix4fv(surfExt.uTex, 1, false, texMat, 0)
+            GLES20.glUniformMatrix4fv(surfExt.uTex, 1, false, if (directVideo && videoReady) videoMatrix else texMat, 0)
         }
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, if (directVideo && videoReady) videoTexId else texId)
         GLES20.glUniform1i(surfExt.uTexture, 0)
         drawSurf(surfExt, g.cx, g.cz, g.w, g.h, 0f)
         }   // fim: tela aberta

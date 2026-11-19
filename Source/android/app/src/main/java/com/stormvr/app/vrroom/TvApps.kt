@@ -29,7 +29,7 @@ import com.stormvr.app.moonlight.MoonlightStore
 import com.limelight.nvstream.jni.MoonBridge
 
 /** Apps que podem aparecer na telona da Sala 3D (a lista da Home). */
-object TvApp { const val HOME = 0; const val BROWSER = 1; const val MOONLIGHT = 2; const val SABER = 3; const val APPS = 4 }
+object TvApp { const val HOME = 0; const val BROWSER = 1; const val MOONLIGHT = 2; const val SABER = 3; const val APPS = 4; const val WORKSPACE = 5 }
 
 /** Home da "TV": tela inicial com os apps. Novos apps entram como novas peças em [tiles]. */
 class TvHome(ctx: Context, private val onOpen: (Int) -> Unit) : LinearLayout(ctx) {
@@ -55,6 +55,11 @@ class TvHome(ctx: Context, private val onOpen: (Int) -> Unit) : LinearLayout(ctx
             Triple(TvApp.APPS, "📱", "Apps"))
         for ((id, icon, name) in tiles) row.addView(tile(ctx, unit, icon, name) { onOpen(id) })
         addView(row)
+        addView(TextView(ctx).apply {
+            text="Workspace MR · gerenciar telas"; setTextColor(Color.rgb(170,235,250)); textSize=22f
+            gravity=Gravity.CENTER; setPadding(24,24,24,24); isClickable=true
+            setOnClickListener { onOpen(TvApp.WORKSPACE) }
+        })
     }
 
     private fun tile(ctx: Context, unit: Int, icon: String, name: String, click: () -> Unit): View {
@@ -78,10 +83,29 @@ class MoonlightPane(ctx: Context, private val act: Activity) : FrameLayout(ctx),
     private val msg = TextView(ctx)
     private var session: MoonlightSession? = null
     private var surfaceReady = false
+    private var directSurface: android.view.Surface? = null
+    private var requested: Pair<String, NvApp>? = null
+
+    /** Decoder owns this output until close; the GL thread consumes its frames. */
+    fun setDirectSurface(surface: android.view.Surface) {
+        if (directSurface === surface) return
+        val restart = requested
+        val reopen = wanted
+        close()
+        directSurface = surface
+        wanted = reopen
+        if (restart != null && reopen) begin(restart.first, restart.second)
+    }
     private var pending: Pair<String, NvApp>? = null
+    @Volatile private var wanted = false
+    @Volatile private var connectionGeneration = 0
+    private val reconnectHandler = Handler(Looper.getMainLooper())
+    @Volatile private var retryCount = 0
+    private val retry = Runnable { if(wanted && isShown) open() }
     private var down = false
     /** Chamado depois de ENCERRAR a sessão (a Sala volta para a Home da TV). */
     var onExit: (() -> Unit)? = null
+    var onVideoActive: ((Boolean) -> Unit)? = null
     private val mm = com.stormvr.app.moonlight.MoonMouse(store, { session?.connection() }) { say(it) }
     private val endBtn = TextView(ctx)
 
@@ -131,6 +155,8 @@ class MoonlightPane(ctx: Context, private val act: Activity) : FrameLayout(ctx),
 
     /** Abre a transmissão: usa o primeiro PC pareado e o app escolhido para a TV (tela "Moonlight" do app; padrão "Desktop"). */
     fun open() {
+        wanted = true
+        val epoch = connectionGeneration
         if (session != null) return
         val ip = store.hosts().firstOrNull { store.paired(it) }
         if (ip == null) { say("Nenhum PC pareado.\nAbra “Moonlight” na tela inicial do app StormVR e pareie o PC."); return }
@@ -141,16 +167,24 @@ class MoonlightPane(ctx: Context, private val act: Activity) : FrameLayout(ctx),
                 val apps = http.appList
                 if (apps.isEmpty()) { say("O PC não tem apps no Sunshine."); return@Thread }
                 if (store.askApp() && apps.size > 1) {            // pergunta qual app abrir (com as imagens cadastradas no Sunshine)
-                    ui { showPicker(ip, http, apps.toList()) }
+                    ui { if(wanted && epoch == connectionGeneration) showPicker(ip, http, apps.toList()) }
                     return@Thread
                 }
                 val app = apps.firstOrNull { it.appName.equals(store.tvApp(), true) } ?: apps.firstOrNull { it.appName.equals("Desktop", true) } ?: apps.first()
-                ui { begin(ip, app) }
-            } catch (e: Exception) { say("Erro ao conectar: ${e.message ?: e.javaClass.simpleName}") }
+                ui { if(wanted && epoch == connectionGeneration) begin(ip, app) }
+            } catch (e: Exception) { if(wanted && epoch==connectionGeneration) { say("Erro ao conectar: ${e.message ?: e.javaClass.simpleName}"); scheduleRetry() } }
         }.start()
     }
 
     private var picker: View? = null
+    private fun scheduleRetry() { ui {
+        if(wanted) {
+            val delay=(1000L shl retryCount.coerceAtMost(4)).coerceAtMost(15000L)
+            retryCount++
+            reconnectHandler.removeCallbacks(retry); reconnectHandler.postDelayed(retry,delay)
+        }
+    } }
+
     private fun dismissPicker() { picker?.let { this@MoonlightPane.removeView(it) }; picker = null }
 
     /** Seletor de app dentro da telona: um cartão por app do Sunshine (Desktop, Big Picture, monitor virtual...) com a imagem dele. */
@@ -214,16 +248,26 @@ class MoonlightPane(ctx: Context, private val act: Activity) : FrameLayout(ctx),
 
     private fun begin(ip: String, app: NvApp) {
         fitSurface(width, height)
-        if (!surfaceReady) { pending = ip to app; return }
-        val s = MoonlightSession(act, this)
+        requested = ip to app
+        if (directSurface?.isValid != true && !surfaceReady) { pending = ip to app; return }
+        val epoch = ++connectionGeneration
+        val s = MoonlightSession(act, object: MoonlightSession.Events {
+            override fun onStatus(text: String) { if(epoch == connectionGeneration) this@MoonlightPane.onStatus(text) }
+            override fun onStarted() { if(epoch == connectionGeneration) this@MoonlightPane.onStarted() }
+            override fun onEnded(code: Int,message: String) { if(epoch == connectionGeneration) this@MoonlightPane.onEnded(code,message) }
+        })
         session = s
-        try { s.start(ip, app, store, sv.holder.surface) } catch (e: Throwable) { session = null; say("Falha ao iniciar: ${e.message ?: e.javaClass.simpleName}") }
+        try { s.start(ip, app, store, directSurface?.takeIf { it.isValid } ?: sv.holder.surface) } catch (e: Throwable) { s.stop(); session = null; say("Falha ao iniciar: ${e.message ?: e.javaClass.simpleName}"); scheduleRetry() }
     }
 
     fun close() {
+        wanted=false; connectionGeneration++
+        onVideoActive?.invoke(false)
+        reconnectHandler.removeCallbacks(retry); retryCount=0
         dismissPicker()
         stopMouseTick()
         pending = null
+        requested = null
         session?.stop(); session = null
         down = false
         ui { endBtn.visibility = View.GONE }
@@ -231,14 +275,20 @@ class MoonlightPane(ctx: Context, private val act: Activity) : FrameLayout(ctx),
 
     override fun surfaceCreated(holder: SurfaceHolder) { surfaceReady = true; pending?.let { pending = null; begin(it.first, it.second) } }
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-    override fun surfaceDestroyed(holder: SurfaceHolder) { surfaceReady = false }
+    override fun surfaceDestroyed(holder: SurfaceHolder) {
+        surfaceReady = false
+        if (directSurface == null) { val retry = requested; close(); pending = retry }
+    }
 
     override fun onStatus(text: String) { say(text) }
-    override fun onStarted() { ui { msg.visibility = View.GONE; endBtn.visibility = View.VISIBLE } }
+    override fun onStarted() { retryCount=0; ui { onVideoActive?.invoke(true); msg.visibility = View.GONE; endBtn.visibility = View.VISIBLE } }
     override fun onEnded(errorCode: Int, message: String) {
+        ui { onVideoActive?.invoke(false) }
+        val ended=session
         session = null
+        Thread { ended?.stop(); scheduleRetry() }.start()
         ui { endBtn.visibility = View.GONE }
-        say("Transmissão encerrada" + (if (errorCode != 0) " (erro $errorCode)" else "") + (if (message.isNotEmpty()) "\n$message" else "") + "\nToque em ⌂ e abra de novo.")
+        say("Transmissão encerrada" + (if (errorCode != 0) " (erro $errorCode)" else "") + (if (message.isNotEmpty()) "\n$message" else "") + "\nTentando reconectar; Home cancela a transmissão.")
     }
 
     // ---- entrada: o laser/pinça do StormVR vira mouse no PC

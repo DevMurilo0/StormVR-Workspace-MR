@@ -88,6 +88,10 @@ class VrRoomActivity : Activity() {
     }
 
     private val state = VrState()
+    private val workspace = WorkspaceManager(this,state)
+    private val workspaceDisplays by lazy { WorkspaceDisplays(this) }
+    private val workspaceInteraction by lazy { WorkspaceInteraction(workspace,state,workspaceDisplays) }
+    private var workspacePanel: WorkspacePanel? = null
     private val ui = VrUi()
     private lateinit var renderer: VrRenderer
     private lateinit var glView: GLSurfaceView
@@ -101,6 +105,10 @@ class VrRoomActivity : Activity() {
     private var pres: Presentation? = null
     private var web: WebView? = null
     private var browserDpi = 0
+    private var directMoonSurface: Surface? = null
+    private var fallbackTexture: android.graphics.SurfaceTexture? = null
+    private var fallbackCamera: CameraPassthrough? = null
+    private var arUnavailable=false
     @Volatile private var texSurface: Surface? = null
     private var widthIdx = 2
     private var homeUrl = "https://www.google.com"
@@ -250,6 +258,41 @@ class VrRoomActivity : Activity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); if (hasFocus) com.stormvr.app.Immersive.apply(this) }
 
+    private fun workspaceChanged() {
+        workspace.enabled=true
+        if(vrMode && !renderer.cameraFallback) { if(state.handsOn) startHands() else if(state.handState!=0) stopHands() }
+        workspace.screens.forEach { it.pose.updateGeom(); workspaceDisplays.navigate(it) }
+        workspaceDisplays.retain(workspace.screens.map { it.id }.toSet())
+    }
+    private fun createWorkspacePanel(ctx: Context): WorkspacePanel = WorkspacePanel(ctx,workspace,state,
+        { workspaceChanged() }, { mode ->
+            val store=com.stormvr.app.moonlight.MoonlightStore(this)
+            store.setResolution(if(mode==2) 1920 else 1280,if(mode==2) 1080 else 720)
+            store.setFps(if(mode==0) 20 else 30); store.setBitrateKbps(if(mode==2) 12000 else if(mode==0) 3500 else 6000)
+            state.lite=mode==0; state.handMaxFps=if(mode==0) 15 else if(mode==2) 30 else 20
+            state.twoHands=false; tracker?.wantHands=1; state.predMs=15f
+            if(vrMode) applyLite()
+            getSharedPreferences("workspace_mr",0).edit().putBoolean("configured",true).apply()
+            toast("Perfil aplicado; reconecte o Moonlight para alterar o vídeo")
+        }, {
+            workspace.enabled=true; state.passthrough=true; state.imuPos=false
+            val prefs=getSharedPreferences("workspace_mr",0)
+            if(!prefs.getBoolean("configured",false)) {
+                val store=com.stormvr.app.moonlight.MoonlightStore(this)
+                store.setResolution(1280,720); store.setFps(30); store.setBitrateKbps(6000)
+                state.handMaxFps=20; state.twoHands=false; state.predMs=15f
+                prefs.edit().putBoolean("configured",true).apply()
+            }
+            state.extraLean=0f; state.extraDrop=0f; state.extrasActive=false
+            if(!vrMode) enterVr() else { stopAr(); startAr(); showTv(TvApp.HOME) }
+        }, leave = {
+            workspaceInteraction.cancel(); workspace.enabled=false; workspaceDisplays.close()
+            state.passthrough=false
+            state.imuPos=getSharedPreferences("vrroom",0).getBoolean("imupos",true)
+            applyExtras()
+            if(vrMode) { stopAr(); startAr(); showTv(TvApp.HOME) }
+        })
+
     // =================================================================== ciclo de vida
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -264,7 +307,20 @@ class VrRoomActivity : Activity() {
 
         loadPrefs()
         renderer = VrRenderer(this, state, ui) { s -> runOnUiThread { onTexSurface(s) } }
+        renderer.onFallbackTexture = { texture -> runOnUiThread {
+            fallbackTexture=texture
+            if(arUnavailable && vrMode && state.passthrough) startFallbackCamera()
+        } }
+        renderer.workspace = workspace
+        renderer.onWorkspaceSurface = { screen,surface -> runOnUiThread {
+            if(surface != null && screen in workspace.screens && !isDestroyed) workspaceDisplays.attach(screen,surface)
+        } }
+        renderer.onVideoSurface = { surface,retire -> runOnUiThread {
+            if(!isDestroyed) { directMoonSurface = surface; tvMoon?.setDirectSurface(surface) }
+            retire()
+        } }
         glView = GLSurfaceView(this).apply {
+            preserveEGLContextOnPause = true
             setOnTouchListener { _, ev -> if (vrMode && state.fullscreen) { forwardFullscreenTouch(ev); true } else if (vrMode && fingerCtl) { fingerTouch(ev); true } else false }
             setEGLContextClientVersion(2)
             setZOrderOnTop(true)
@@ -322,6 +378,9 @@ class VrRoomActivity : Activity() {
     override fun onResume() {
         super.onResume()
         glView.onResume()
+        workspaceDisplays.resume()
+        texSurface?.takeIf { it.isValid }?.let { vd?.surface = it }
+        if (vrMode && tvApp == TvApp.MOONLIGHT) tvMoon?.open()
         if (vrMode) {
             renderer.startSensors()
             startAr()
@@ -332,6 +391,9 @@ class VrRoomActivity : Activity() {
 
     override fun onPause() {
         Choreographer.getInstance().removeFrameCallback(frameCb)
+        workspaceInteraction.cancel()
+        workspaceDisplays.pause()
+        tvMoon?.close()
         stopAr()
         renderer.stopSensors()
         try { vd?.surface = null } catch (_: Exception) {}
@@ -340,6 +402,8 @@ class VrRoomActivity : Activity() {
     }
 
     override fun onDestroy() {
+        fallbackCamera?.close()
+        workspaceDisplays.close()
         stopPcLink()
         stopHub()
         stopAr()
@@ -351,6 +415,7 @@ class VrRoomActivity : Activity() {
         teardownBrowser()
         try { appLauncher?.release() } catch (_: Exception) {}
         appLauncher = null
+        renderer.releaseSurfaces()
         super.onDestroy()
     }
 
@@ -742,6 +807,10 @@ class VrRoomActivity : Activity() {
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(title)
+            addView(Button(this@VrRoomActivity).apply {
+                text="WORKSPACE MR · telas independentes"; isAllCaps=false
+                setOnClickListener { android.app.AlertDialog.Builder(this@VrRoomActivity).setView(createWorkspacePanel(this@VrRoomActivity)).setPositiveButton("Fechar",null).show() }
+            })
             addView(startBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56)))
             addView(fsBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)))
             addView(Button(this@VrRoomActivity).apply {
@@ -850,9 +919,14 @@ class VrRoomActivity : Activity() {
             }
             val box = FrameLayout(p.context)
             box.addView(w, FrameLayout.LayoutParams(-1, -1))
+            val wp = createWorkspacePanel(p.context)
+            box.addView(wp,FrameLayout.LayoutParams(-1,-1))
+            workspacePanel=wp
             val home = TvHome(p.context) { app -> showTv(app) }
             box.addView(home, FrameLayout.LayoutParams(-1, -1))
             val moon = MoonlightPane(p.context, this)
+            moon.onVideoActive = { active -> renderer.directVideo=active && tvApp==TvApp.MOONLIGHT }
+            directMoonSurface?.takeIf { it.isValid }?.let { moon.setDirectSurface(it) }
             moon.onExit = { runOnUiThread { showTv(TvApp.HOME) } }
             box.addView(moon, FrameLayout.LayoutParams(-1, -1))
             val saber = StormSaberPane(p.context).also { it.handleTouch = false }        // os dedos viram sabres/lasers aqui na Sala (updateFingerControllers)
@@ -889,6 +963,7 @@ class VrRoomActivity : Activity() {
 
     private fun teardownBrowser() {
         try { tvMoon?.close() } catch (_: Exception) {}
+        workspacePanel=null
         tvBox = null; tvHome = null; tvMoon = null; tvSaber = null; tvHomeBtn = null; tvApps = null
         try { pres?.dismiss() } catch (_: Exception) {}
         try { web?.destroy() } catch (_: Exception) {}
@@ -943,6 +1018,9 @@ class VrRoomActivity : Activity() {
         applyExtras(); extras?.recenter()
         startPanel.visibility = View.GONE
         glView.visibility = View.VISIBLE
+        workspaceDisplays.resume()
+        texSurface?.takeIf { it.isValid }?.let { vd?.surface=it }
+        if(tvApp==TvApp.MOONLIGHT) tvMoon?.open()
         glView.post { applyLite(); updateSepFrac() }
         applyImmersive(true)
         state.recenter = true
@@ -961,6 +1039,7 @@ class VrRoomActivity : Activity() {
     }
 
     private fun exitVr() {
+        workspaceInteraction.cancel(); workspaceDisplays.pause(); tvMoon?.close()
         vrMode = false
         extras?.stop()
         stopHub()
@@ -983,7 +1062,17 @@ class VrRoomActivity : Activity() {
     }
 
     // =================================================================== 6DoF (ARCore)
+    private fun startFallbackCamera() {
+        state.sixDof=false; state.handsOn=false; state.headPosOk=false; state.imuPos=false
+        val texture=fallbackTexture ?: return
+        try {
+            val camera=fallbackCamera ?: CameraPassthrough(this) { message -> renderer.camErr=message }.also { fallbackCamera=it }
+            renderer.cameraFallback=true; renderer.fallbackOrientation=camera.start(texture); renderer.fallbackAspect=camera.aspect
+        } catch(e: Exception) { toast("Passthrough indisponível: ${e.javaClass.simpleName}") }
+    }
+
     private fun startAr() {
+        if(arUnavailable && state.passthrough) { startFallbackCamera(); return }
         if (!state.sixDof && !state.handsOn && !state.passthrough) { state.arState = 0; return }
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.CAMERA), 77)
@@ -1027,9 +1116,12 @@ class VrRoomActivity : Activity() {
         } catch (e: Exception) {
             state.sixDof = false
             state.handsOn = false
-            state.passthrough = false
+            arUnavailable=true
             state.arState = 0
-            toast("6DoF/mãos/câmera indisponíveis (${e.javaClass.simpleName}). Usando só rotação.")
+            if(state.passthrough) {
+                startFallbackCamera()
+                toast("ARCore indisponível. Camera2 com rotação 3DoF; sem posição espacial e sem mãos neste fallback.")
+            } else toast("ARCore indisponível (${e.javaClass.simpleName}). Usando só rotação.")
         }
     }
 
@@ -1092,6 +1184,8 @@ class VrRoomActivity : Activity() {
     }
 
     private fun stopAr() {
+        fallbackCamera?.stop()
+        renderer.cameraFallback=false
         stopHands()
         renderer.arRunning = false
         state.arState = 0
@@ -1137,6 +1231,8 @@ class VrRoomActivity : Activity() {
     private var trackSession = false
 
     private fun showTv(app: Int) {
+        if(app == TvApp.WORKSPACE) workspacePanel?.refresh()
+        renderer.directVideo = false
         val leaving = tvApp
         tvApp = app
         if (leaving == TvApp.MOONLIGHT && app != TvApp.MOONLIGHT) tvMoon?.close()
@@ -1146,6 +1242,7 @@ class VrRoomActivity : Activity() {
     private fun applyTvVisibility() {
         web?.visibility = if (tvApp == TvApp.BROWSER) View.VISIBLE else View.GONE
         tvHome?.visibility = if (tvApp == TvApp.HOME) View.VISIBLE else View.GONE
+        workspacePanel?.visibility = if(tvApp == TvApp.WORKSPACE) View.VISIBLE else View.GONE
         tvMoon?.visibility = if (tvApp == TvApp.MOONLIGHT) View.VISIBLE else View.GONE
         tvSaber?.visibility = if (tvApp == TvApp.SABER) View.VISIBLE else View.GONE
         tvApps?.visibility = if (tvApp == TvApp.APPS) View.VISIBLE else View.GONE
@@ -1211,11 +1308,12 @@ class VrRoomActivity : Activity() {
         ex.apply(p)
         saberFixedPref = p.saberLookFixed
         state.extrasSend = p.extrasToSteam
-        state.extrasActive = ex.active
+        state.extrasActive = ex.active && !workspace.enabled
         if (!ex.active) { state.extraLean = 0f; state.extraDrop = 0f }
     }
     @Volatile private var saberFixedPref = false
     private fun tickExtras() {
+        if(workspace.enabled) { state.extraLean=0f; state.extraDrop=0f; state.extrasActive=false; state.imuPos=false; return }
         state.freezeHead = saberFixedPref && tvApp == TvApp.SABER && !state.fullscreen      // StormSaber de cabeça fixa (opção; padrão desligada)
         if (tvApp == TvApp.SABER) tvSaber?.setBody(state.headX, state.headZ)               // lado/altura da cabeça: desviar das paredes
         val ex = extras ?: return
@@ -1412,6 +1510,8 @@ class VrRoomActivity : Activity() {
             tickExtras()
             updateGaze()
             state.updateGeom()
+            workspaceDisplays.budget(workspace.screens,state)
+            workspaceInteraction.tick()
             for (i in 0..1) pick(i)
             updateDwell(now)
             updatePoke()
@@ -1447,8 +1547,9 @@ class VrRoomActivity : Activity() {
             2 -> "procurando mãos"
             else -> "rastreando"
         }
-        val l1 = "GL ${state.glFps} fps  |  ARCore: $ar  |  Mãos: $hs"
+        val l1 = "GL ${state.glFps} fps | vídeo ${renderer.videoFrames} frames | ARCore: $ar  |  Mãos: $hs"
         var l2 = tracker?.info() ?: "tracker não iniciado"
+        if(workspace.enabled) l2 += " | " + workspaceInteraction.feedback
         if (renderer.camErr.isNotEmpty()) l2 += " | ${renderer.camErr}"
         if (renderer.arErr.isNotEmpty()) l2 += " | erro AR: ${renderer.arErr}"
         val sig = l1 + l2

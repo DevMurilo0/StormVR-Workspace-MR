@@ -192,7 +192,8 @@ class VrState {
     fun cornerZ(i: Int) = win.cz + (if (i < 2) 1f else -1f) * (win.h / 2f + handle() * 0.35f)
 
     /** Curvatura K = 1/R (0 = plano). */
-    fun curveK(): Float = if (curved) 1f / (distance * 1.25f) else 0f
+    @Volatile var workspaceCurve = 1f
+    fun curveK(): Float = if (curved) workspaceCurve / (distance * 1.25f) else 0f
 
     private fun rx(a: Float): FloatArray { val c = cos(a); val s = sin(a); return floatArrayOf(1f, 0f, 0f, 0f, c, -s, 0f, s, c) }
     private fun ry(a: Float): FloatArray { val c = cos(a); val s = sin(a); return floatArrayOf(c, 0f, s, 0f, 1f, 0f, -s, 0f, c) }

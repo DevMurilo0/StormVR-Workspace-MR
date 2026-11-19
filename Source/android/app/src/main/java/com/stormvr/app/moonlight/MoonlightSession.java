@@ -42,8 +42,6 @@ public class MoonlightSession implements NvConnectionListener, PerfOverlayListen
     public void start(String host, NvApp app, MoonlightStore st, Surface surface) {
         this.host = host;
         com.limelight.binding.video.MediaCodecHelper.initialize(act, "");   // obrigatorio antes do MediaCodecDecoderRenderer (o Artemis chama isso em Game.onCreate)
-        // o Artemis exige isto ANTES de criar o decodificador (detecta codecs/quirks do aparelho); sem isso: "MediaCodecHelper must be initialized before use"
-        com.limelight.binding.video.MediaCodecHelper.initialize(act, "");
         PreferenceConfiguration prefs = PreferenceConfiguration.readPreferences(act);
         prefs.width = st.width(); prefs.height = st.height(); prefs.fps = st.fps();
         prefs.bitrate = st.bitrateKbps(); prefs.enableHdr = false; prefs.enablePerfOverlay = false;
@@ -53,8 +51,7 @@ public class MoonlightSession implements NvConnectionListener, PerfOverlayListen
         audio = new AndroidAudioRenderer(act, false);
 
         int formats = MoonBridge.VIDEO_FORMAT_H264;
-        if (decoder.isHevcSupported()) formats |= MoonBridge.VIDEO_FORMAT_H265;
-        if (decoder.isAv1Supported()) formats |= MoonBridge.VIDEO_FORMAT_AV1_MAIN8;
+        // Workspace baseline: H.264 reduces decoder and old-host compatibility pressure.
 
         StreamConfiguration config = new StreamConfiguration.Builder()
                 .setResolution(st.width(), st.height())
@@ -126,7 +123,7 @@ public class MoonlightSession implements NvConnectionListener, PerfOverlayListen
     @Override public void stageComplete(String stage) { }
     @Override public boolean stageFailed(String stage, int portFlags, int errorCode) { ev.onStatus("Falha em " + stage + " (código " + errorCode + ")"); return false; }
     @Override public void connectionStarted() { startKeepAlive(); ev.onStarted(); }
-    @Override public void connectionTerminated(int errorCode) { if (!stopped) ev.onEnded(errorCode, lastMessage); }
+    @Override public void connectionTerminated(int errorCode) { keepRun = false; if (!stopped) ev.onEnded(errorCode, lastMessage); }
     @Override public void connectionStatusUpdate(int connectionStatus) { }
     @Override public void displayMessage(String message) { lastMessage = message == null ? "" : message; ev.onStatus(lastMessage); }
     @Override public void displayTransientMessage(String message) { ev.onStatus(message); }
