@@ -13,6 +13,7 @@ class SpatialGesture {
     private var lastSeen=-1L
     private var x=0f; private var y=0f
     private var cancelledClick=false
+    private var clickFired=false
     private var hoverSince=-1L
     private var dwellX=0f; private var dwellY=0f
     private var dwellCaptured=false
@@ -55,10 +56,18 @@ class SpatialGesture {
             if(!grip) {
                 if(openSince<0) openSince=now
                 if(now-openSince>=80) {
-                    val click=kind==FingertipGesture.Kind.CLICK && !cancelledClick && now-downSince in 80..500
+                    // In the combined interaction mode, Enter fires while the fingers touch.
+                    // Legacy spatial tests/mode continue to click on release.
+                    val click=kind==FingertipGesture.Kind.CLICK && !clickFired && !cancelledClick &&
+                        now-downSince in 80..500
                     release(); return click
                 }
             } else openSince=-1
+            if(allowDwell && grip && kind==FingertipGesture.Kind.CLICK &&
+                !clickFired && !cancelledClick && now-downSince>=80) {
+                clickFired=true
+                return true // pinch is Enter, once; holding the fingers together never repeats
+            }
             if(grip && now-downSince>=80 && !captured && kind!=FingertipGesture.Kind.CLICK) {
                 phase=if(kind==FingertipGesture.Kind.RESIZE) FingertipGesture.Phase.RESIZING else FingertipGesture.Phase.DRAGGING
             }
@@ -67,7 +76,7 @@ class SpatialGesture {
         if(grip) {
             // A pinch only starts against a target previously hovered by an extended index.
             if(armed && id==target) {
-                downSince=now; openSince=-1; cancelledClick=false; hoverSince=-1
+                downSince=now; openSince=-1; cancelledClick=false; clickFired=false; hoverSince=-1
                 progress=0f; phase=FingertipGesture.Phase.ARMED
             } else release()
             return false
