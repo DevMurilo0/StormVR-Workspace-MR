@@ -123,14 +123,14 @@ class FingertipInteraction(
                 motion[i].begin(t.pose,if(anchored) anchor[0] else t.s,if(anchored) anchor[1] else t.z,t.index,now)
                 t.screen?.let { workspace.selectedId=it.id }
             } else if(g.captured && t!=null) {
-                if(!observed) motion[i].hold()
+                if(!observed || (!grip[i] && !pointing)) motion[i].hold()
                 else {
                     val ok=motion[i].update(t.pose,g.phase==FingertipGesture.Phase.RESIZING,state.rox[i],state.roy[i],state.roz[i],ray[0],ray[1],ray[2],now)
                     if(ok && spatialMode && g.phase!=FingertipGesture.Phase.RESIZING) motion[i].updateDepth(t.pose,state.handSpatial[i],now)
                     if(ok) missed[i]=-1 else if(missed[i]<0) missed[i]=now else if(now-missed[i]>350) g.release(now)
                 }
             }
-            if((before && !g.captured) || (spatialMode && !g.ownsTarget)) { motion[i].end(); captured[i]=null; hoveredPose[i]=null; claimedKey[i]=null; missed[i]=-1 }
+            if((before && !g.captured) || !g.ownsTarget) { motion[i].end(); captured[i]=null; hoveredPose[i]=null; claimedKey[i]=null; missed[i]=-1 }
             state.fingertipTargetId[i]=if(g.ownsTarget) t?.screen?.id ?: "main" else null
             state.fingertipPhase[i]=g.phase
             state.dwellProgress[i]=g.progress
