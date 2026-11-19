@@ -130,9 +130,9 @@ class AndroidInteractionTest {
         aim(); finger.tick(1000)
         assertEquals(FingertipGesture.Phase.DRAGGING,s.fingertipPhase[i]); assertEquals(0,clicks)
         assertFalse(s.pressed[i]); assertFalse(s.handPinch[i])
-        s.r2=1f; s.pressed[i]=true; finger.tick(620)
+        s.r2=1f; s.pressed[i]=true; finger.tick(1020)
         assertFalse(s.fingertipOwned[i]); assertTrue(s.pressed[i])
-        s.r2=0f; s.interaction.handMode=InteractionSettings.PINCH; s.pressed[i]=true; finger.tick(700)
+        s.r2=0f; s.interaction.handMode=InteractionSettings.PINCH; s.pressed[i]=true; finger.tick(1100)
         assertFalse(s.fingertipOwned[i]); assertTrue(s.pressed[i])
     }
     @Test fun nearestScreenReceivesFingerHoverAndLockedFramesCannotBeGrabbed() {
