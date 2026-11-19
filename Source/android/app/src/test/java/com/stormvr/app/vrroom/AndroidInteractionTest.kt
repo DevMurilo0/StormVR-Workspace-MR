@@ -244,4 +244,29 @@ class AndroidInteractionTest {
         assertEquals(0,restored.spatialEngine); assertEquals(InteractionSettings.INDICATOR,restored.handMode)
     }
 
+    @Test fun combinedHandInputDoesNotDuplicateDwellPinchOrBriefLoss() {
+        val activity=Robolectric.buildActivity(Activity::class.java).setup().get()
+        val s=VrState().apply { handsOn=true; curved=false; interaction.handMode=InteractionSettings.SPATIAL; updateGeom() }
+        val ws=WorkspaceManager(activity,s); val displays=WorkspaceDisplays(activity)
+        var clicks=0
+        val finger=FingertipInteraction(s,ws,displays,WorkspaceInteraction(ws,s,displays)) { _,_,_,_,_ -> clicks++; true }
+        fun tick(t: Long,pinch: Boolean=false,seen: Boolean=true,x: Float=0f) {
+            s.laserHand[1]=true; s.handValid[1]=true; s.handObserved[1]=seen; s.fingertipPointing[1]=true; s.handPinch[1]=pinch
+            s.ax[1]=x; s.az[1]=s.wz; s.hoverKind[1]=Hit.WIN
+            val point=FloatArray(3); s.surfPoint(x,s.wz,0f,point)
+            s.hitX[1]=point[0]; s.hitY[1]=point[1]; s.hitZ[1]=point[2]
+            finger.tick(t)
+        }
+        for(t in 0L..1000L step 100) tick(t)
+        assertEquals(1,clicks)
+        tick(1100,true); tick(1180,true)
+        for(t in 1200L..2400L step 100) tick(t)
+        assertEquals(1,clicks)
+        tick(2450,seen=false)
+        for(t in 2500L..3600L step 100) tick(t)
+        assertEquals(1,clicks)
+        for(t in 3700L..4700L step 100) tick(t,x=.2f)
+        assertEquals(2,clicks)
+    }
+
 }

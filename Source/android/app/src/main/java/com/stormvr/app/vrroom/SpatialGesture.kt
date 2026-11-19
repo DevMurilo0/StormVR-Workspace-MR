@@ -39,8 +39,11 @@ class SpatialGesture {
         if(blocked) { reset(); return false }
         if(!observed) {
             cancelledClick=true
-            if(lastSeen>=0 && now-lastSeen>220) release()
-            if(!ownsTarget) { armed=false; target=null; phase=FingertipGesture.Phase.IDLE; hoverSince=-1; progress=0f }
+            if(lastSeen>=0 && now-lastSeen>220) {
+                release(); armed=false; target=null; phase=FingertipGesture.Phase.IDLE
+            }
+            // Brief loss restarts pending dwell time, but preserves an already-fired target latch.
+            if(!ownsTarget) { hoverSince=-1; progress=0f }
             return false
         }
         if(lastSeen>=0 && now-lastSeen>220) release()
@@ -76,6 +79,11 @@ class SpatialGesture {
             return false
         }
         if(grip) {
+            // Pinch and dwell confirm the same pointing session only once, in either order.
+            if(allowDwell && id!=null && dwellLatchedId==id && kind==FingertipGesture.Kind.CLICK) {
+                phase=FingertipGesture.Phase.RELEASED; progress=0f
+                return false
+            }
             // A pinch only starts against a target previously hovered by an extended index.
             if(armed && id==target) {
                 downSince=now; openSince=-1; cancelledClick=false; clickFired=false; hoverSince=-1

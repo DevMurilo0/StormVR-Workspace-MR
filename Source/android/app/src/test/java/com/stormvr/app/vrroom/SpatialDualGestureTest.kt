@@ -74,4 +74,35 @@ class SpatialDualGestureTest {
         frame(g,140,pinch=true)
         assertFalse(g.ownsTarget)
     }
+    @Test fun dwellThenPinchCannotConfirmTheSameHoverTwice() {
+        val g=SpatialGesture()
+        var clicks=0
+        for(t in 0L..1000L step 100) if(frame(g,t)) clicks++
+        assertEquals(1,clicks)
+        for(t in 1100L..1400L step 100) if(frame(g,t,pinch=true)) clicks++
+        for(t in 1500L..2800L step 100) if(frame(g,t)) clicks++
+        assertEquals(1,clicks)
+        frame(g,2900,x=.2f)
+        for(t in 3000L..3900L step 100) if(frame(g,t,x=.2f)) clicks++
+        assertEquals(2,clicks)
+    }
+
+    @Test fun briefTrackingLossCannotRearmAnAlreadyConfirmedTarget() {
+        val g=SpatialGesture()
+        var clicks=0
+        for(t in 0L..1000L step 100) if(frame(g,t)) clicks++
+        assertFalse(frame(g,1050,seen=false))
+        for(t in 1100L..2400L step 100) if(frame(g,t)) clicks++
+        assertEquals(1,clicks)
+    }
+
+    @Test fun pinchThenDwellCannotConfirmTheSameHoverTwice() {
+        val g=SpatialGesture()
+        frame(g,0)
+        assertFalse(frame(g,100,pinch=true))
+        assertTrue(frame(g,180,pinch=true))
+        for(t in 200L..500L step 100) assertFalse(frame(g,t,pinch=true))
+        for(t in 600L..2100L step 100) assertFalse(frame(g,t))
+    }
+
 }

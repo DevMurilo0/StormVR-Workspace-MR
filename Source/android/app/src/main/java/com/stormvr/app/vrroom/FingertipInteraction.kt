@@ -130,7 +130,11 @@ class FingertipInteraction(
                     if(ok) missed[i]=-1 else if(missed[i]<0) missed[i]=now else if(now-missed[i]>350) g.release(now)
                 }
             }
-            if((before && !g.captured) || !g.ownsTarget) { motion[i].end(); captured[i]=null; hoveredPose[i]=null; claimedKey[i]=null; missed[i]=-1 }
+            if((before && !g.captured) || !g.ownsTarget) {
+                motion[i].end(); captured[i]=null; missed[i]=-1
+                // Hover reserves the foreground target too: the other hand cannot confirm it again.
+                if(!observed || !pointing || !allowed) { hoveredPose[i]=null; claimedKey[i]=null }
+            }
             state.fingertipTargetId[i]=if(g.ownsTarget) t?.screen?.id ?: "main" else null
             state.fingertipPhase[i]=g.phase
             state.dwellProgress[i]=g.progress
