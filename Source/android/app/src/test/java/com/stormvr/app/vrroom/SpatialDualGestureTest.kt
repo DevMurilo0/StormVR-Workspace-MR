@@ -10,16 +10,21 @@ class SpatialDualGestureTest {
 
     @Test fun indexStaysOneSecondThenEntersOnlyOnceUntilMovement() {
         val g=SpatialGesture()
-        assertFalse(frame(g,0)); assertFalse(frame(g,999))
-        assertTrue(frame(g,1000)); assertFalse(frame(g,1500))
-        assertFalse(frame(g,1700,x=.15f)); assertFalse(frame(g,2699,x=.15f))
+        assertFalse(frame(g,0))
+        for(t in 100L..900L step 100) assertFalse(frame(g,t))
+        assertFalse(frame(g,999))
+        assertTrue(frame(g,1000))
+        for(t in 1100L..1500L step 100) assertFalse(frame(g,t))
+        assertFalse(frame(g,1700,x=.15f))
+        for(t in 1800L..2600L step 100) assertFalse(frame(g,t,x=.15f))
+        assertFalse(frame(g,2699,x=.15f))
         assertTrue(frame(g,2700,x=.15f))
     }
 
     @Test fun fingerHoverOnMoveBarBecomesDragAfterOneSecond() {
         val g=SpatialGesture()
         frame(g,0,kind=FingertipGesture.Kind.MOVE)
-        frame(g,1000,kind=FingertipGesture.Kind.MOVE)
+        for(t in 100L..1000L step 100) frame(g,t,kind=FingertipGesture.Kind.MOVE)
         assertTrue(g.captured)
         assertEquals(FingertipGesture.Phase.DRAGGING,g.phase)
         frame(g,1040,kind=FingertipGesture.Kind.MOVE,x=.5f)
@@ -32,7 +37,8 @@ class SpatialDualGestureTest {
     @Test fun fingerHoverOnCornerResizesAndPinchOnCornerAlsoResizes() {
         val kind=FingertipGesture.Kind.RESIZE
         val d=SpatialGesture()
-        frame(d,0,kind=kind);frame(d,1100,kind=kind)
+        frame(d,0,kind=kind)
+        for(t in 100L..1100L step 100) frame(d,t,kind=kind)
         assertEquals(FingertipGesture.Phase.RESIZING,d.phase)
         val p=SpatialGesture()
         frame(p,0,kind=kind)
