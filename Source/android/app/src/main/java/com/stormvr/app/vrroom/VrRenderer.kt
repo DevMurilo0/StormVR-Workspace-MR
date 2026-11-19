@@ -519,6 +519,7 @@ class VrRenderer(
                 j.cx = intr.principalPoint[0]
                 j.cy = intr.principalPoint[1]
                 j.rot = rot
+                j.sensorPose = useArPose
                 j.tsNs = frame.timestamp
                 j.submitNs = System.nanoTime()
             }
@@ -539,8 +540,9 @@ class VrRenderer(
         val a = 1f - exp(-dt * 38f)
         synchronized(st.handLock) {
             for (h in 0..1) {
-                val ok = f != null && f.valid[h] && (now - f.arrivalNs) < 300_000_000L
+                val ok = f != null && f.valid[h] && HandSamplePolicy.fresh(now, f.sampleNs[h])
                 st.handValid[h] = ok
+                st.handObserved[h] = ok && f!!.observed[h]
                 st.handPinch[h] = ok && f!!.pinch[h]
                 st.handRatio[h] = if (ok) f!!.ratio[h] else 1f
                 st.handClosing[h] = ok && f!!.closing[h]
@@ -549,8 +551,7 @@ class VrRenderer(
                     continue
                 }
                 // atraso real: processamento do rastreador + (fora do modo câmera) latência da câmera
-                val camLat = if (st.passthrough) 0f else arLatNs / 1e9f
-                val age = ((((now - f!!.arrivalNs) + f.latNs) / 1e9f + camLat) * 0.8f).coerceIn(0f, 0.14f)
+                val age = if (f!!.observed[h]) HandSamplePolicy.predictionSeconds(now, f.sampleNs[h], f.latNs) else 0f
                 val src = f.pts[h]
                 val v = f.vel[h]
                 val dst = st.handPts[h]
@@ -558,7 +559,8 @@ class VrRenderer(
                 for (i in 0 until 21) {
                     for (c in 0..2) {
                         val k = i * 3 + c
-                        val t = src[k] + v[c] * age
+                        val t = src[k] + (v[c] * age).coerceIn(-.015f,.015f)
+                        st.handInputPts[h][k] = src[k]
                         if (!hRenderInit[h]) r[k] = t else r[k] += (t - r[k]) * a
                         dst[k] = r[k]
                     }
@@ -1290,6 +1292,7 @@ class VrRenderer(
             val base = if (h == 0) cHandL else cHandR
             GLES20.glUniform4fv(hColor, 1, base, 0)
 
+            if (st.interaction.handStyle == 0) {
             // palma com espessura: duas camadas deslocadas ao longo da normal
             palmBuf.position(0)
             for (layer in 0..1) {
@@ -1316,6 +1319,8 @@ class VrRenderer(
             Matrix.setIdentityM(model, 0)
             drawMesh(palmBuf, 24)
 
+            }
+            if (st.interaction.handStyle < 2) {
             // ossos dos dedos (afinando) e ossos da palma (mais grossos)
             var b = 0
             while (b < bones.size) {
@@ -1337,12 +1342,13 @@ class VrRenderer(
             // (sem antebraço/cotoco: só a mão é desenhada)
 
             // articulações (arredondam as dobras)
-            for (i in 1 until 21) {
+            if (st.interaction.handStyle == 0) for (i in 1 until 21) {
                 if (handPin[h] && (i == 4 || i == 8)) continue
                 if (i == 12 || i == 16 || i == 20) continue                  // pontas já arredondadas pelo afinamento do osso
                 drawSphere(p[i * 3], p[i * 3 + 1], p[i * 3 + 2], jointR[i] * 1.06f)
             }
 
+            }
             // pontas verdes quando pinçando
             if (handPin[h]) {
                 GLES20.glUniform4fv(hColor, 1, cPinch, 0)
@@ -1370,7 +1376,7 @@ class VrRenderer(
                 ballColor[0] = 1f - 0.7f * t
                 ballColor[1] = 1f
                 ballColor[2] = 1f - 0.45f * t
-                ballColor[3] = 1f
+                ballColor[3] = st.interaction.indicatorIntensity
                 GLES20.glUniform4fv(hColor, 1, ballColor, 0)
                 drawSphere(bx, by, bz, 0.0058f + 0.0014f * t)          // bolinha menor (antes ~1 cm)
             }
@@ -1411,7 +1417,7 @@ class VrRenderer(
             val t=workspaceTextures[screen.id] ?: continue
             val p=screen.pose; val g=p.win
             GLES20.glUseProgram(surfColor.p)
-            if(screen.id == ws.selectedId) GLES20.glUniform4f(surfColor.uColor,.18f,.75f,.88f,ws.uiOpacity)
+            if(screen.id == ws.hoverId || screen.id == ws.selectedId) GLES20.glUniform4f(surfColor.uColor,.18f,.75f,.88f,ws.uiOpacity)
             else GLES20.glUniform4f(surfColor.uColor,.035f,.065f,.09f,ws.uiOpacity)
             drawSurf(surfColor,g.cx,g.cz,g.w+.045f,g.h+.045f,-.012f,p)
             drawSurf(surfColor,g.cx,g.cz+g.h/2f+.05f,g.w,.075f,0f,p)
@@ -1426,6 +1432,7 @@ class VrRenderer(
                 GLES20.glUniform4f(surfColor.uColor,.65f,.96f,1f,.95f)
                 val cursor=p.width*.009f
                 drawSurf(surfColor,ws.hoverS,ws.hoverZ,cursor,cursor,.014f,p)
+                drawDwell(ws.hoverS,ws.hoverZ,p,stateProgress())
             }
         }
     }
@@ -1504,7 +1511,7 @@ class VrRenderer(
         drawSurf(surfUi, st.tb.cx, st.tb.cz, st.tb.w, st.tb.h, 0.002f)
 
         // painel de diagnóstico das mãos (acima da janela)
-        if (st.handsOn && ui.menuOpen && !hidden) {              // textos de diagnóstico: só com o Menu aberto
+        if ((st.handsOn || cameraFallback) && !hidden && (ui.menuOpen || !st.handValid.any { it })) {              // textos de diagnóstico: só com o Menu aberto
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ui.status.texId)
             val sw = minOf(st.win.w, 3.2f)
             val sh = sw * 120f / 1400f
@@ -1513,6 +1520,16 @@ class VrRenderer(
     }
 
     // ---------- lasers ----------
+    private fun stateProgress() = maxOf(st.dwellProgress[0],st.dwellProgress[1])
+    private fun drawDwell(s: Float,z: Float,pose: VrState,progress: Float) {
+        if(progress<=0f) return
+        GLES20.glUniform4f(surfColor.uColor,.3f,1f,.75f,st.interaction.indicatorIntensity)
+        val radius=pose.width*.014f
+        for(segment in 0 until (progress*24).toInt()) {
+            val angle=segment*(2f*PI.toFloat()/24)
+            drawSurf(surfColor,s+cos(angle)*radius,z+sin(angle)*radius,radius*.18f,radius*.18f,.018f,pose)
+        }
+    }
     private fun drawLasers() {
         GLES20.glUseProgram(roomProg)
         for (i in 0..1) {
@@ -1546,6 +1563,7 @@ class VrRenderer(
                 GLES20.glUseProgram(surfColor.p)
                 GLES20.glUniform4fv(surfColor.uColor, 1, color, 0)
                 drawSurf(surfColor, st.ax[i], st.az[i], ds, ds, 0.012f)
+                drawDwell(st.ax[i],st.az[i],st,st.dwellProgress[i])
                 GLES20.glUseProgram(roomProg)
             }
         }

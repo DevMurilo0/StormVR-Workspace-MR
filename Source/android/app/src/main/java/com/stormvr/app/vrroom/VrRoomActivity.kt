@@ -175,6 +175,7 @@ class VrRoomActivity : Activity() {
     private var lastFrameNs = 0L
 
     private fun loadPrefs() {
+        state.interaction.load(getSharedPreferences("vr_interaction",0))
         val p = getSharedPreferences("vrroom", Context.MODE_PRIVATE)
         state.ipdMm = p.getFloat("ipd", 64f).coerceIn(50f, 80f)
         state.sepMm = p.getFloat("sep", 0f).coerceIn(-20f, 20f)
@@ -200,6 +201,8 @@ class VrRoomActivity : Activity() {
         if (state.handSource == 1) state.handsOn = true                     // as bolinhas usam o mesmo pipeline de câmera das mãos
         state.imuPos = p.getBoolean("imupos", true)
         state.handMaxFps = p.getInt("handfps", 30).coerceIn(10, 60)
+        state.kbAz=p.getFloat("kbaz",0f).coerceIn(-80f,80f)
+        state.kbEl=p.getFloat("kbel",0f).coerceIn(-45f,45f)
         state.scrAz = p.getFloat("scraz", 0f).coerceIn(-180f, 180f)
         state.scrEl = p.getFloat("screl", 0f).coerceIn(-80f, 80f)
         state.scrYaw = p.getFloat("scryaw", 0f).coerceIn(-180f, 180f)
@@ -209,6 +212,7 @@ class VrRoomActivity : Activity() {
 
     private fun savePrefs() {
         getSharedPreferences("vrroom", Context.MODE_PRIVATE).edit()
+            .putFloat("kbaz",state.kbAz).putFloat("kbel",state.kbEl)
             .putFloat("ipd", state.ipdMm)
             .putFloat("sep", state.sepMm)
             .putInt("tol", state.tolPct)
@@ -259,6 +263,8 @@ class VrRoomActivity : Activity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); if (hasFocus) com.stormvr.app.Immersive.apply(this) }
 
     private fun workspaceChanged() {
+        state.interaction.save(getSharedPreferences("vr_interaction",0))
+        savePrefs()
         workspace.enabled=true
         if(vrMode && !renderer.cameraFallback) { if(state.handsOn) startHands() else if(state.handState!=0) stopHands() }
         workspace.screens.forEach { it.pose.updateGeom(); workspaceDisplays.navigate(it) }
@@ -392,6 +398,8 @@ class VrRoomActivity : Activity() {
     override fun onPause() {
         Choreographer.getInstance().removeFrameCallback(frameCb)
         workspaceInteraction.cancel()
+        pendingKey.fill(-1); pendingToolbar.fill(-1); prevPressed.fill(false); state.inputCaptured.fill(false)
+        releaseTouches()
         workspaceDisplays.pause()
         tvMoon?.close()
         stopAr()
@@ -1459,30 +1467,37 @@ class VrRoomActivity : Activity() {
      */
     private fun updateGaze() {
         val s = state
-        gazeOn = s.dwell && !ControllerHub.hand(false).active() && !(s.handsOn && s.handState >= 3)
+        gazeOn = s.dwell && !ControllerHub.hand(false).active() && !(s.handsOn && s.handValid.any { it })
         if (!gazeOn) return
+        val i=s.interaction.dominantHand
         val g = s.gaze
         val ox = s.headX
         val oy = s.headY
         val oz = s.headZ
-        s.laserHand[1] = false
-        s.lox[1] = ox; s.loy[1] = oy + 0.05f; s.loz[1] = oz - 0.12f
-        s.rox[1] = ox; s.roy[1] = oy; s.roz[1] = oz
+        s.laserHand[i] = false
+        s.lox[i] = ox; s.loy[i] = oy + 0.05f; s.loz[i] = oz - 0.12f
+        s.rox[i] = ox; s.roy[i] = oy; s.roz[i] = oz
         if (s.intersectSurface(ox, oy, oz, g[0], g[1], g[2], hubHit)) {
-            s.ax[1] = hubHit[0].coerceIn(-7f, 7f)
-            s.az[1] = hubHit[1].coerceIn(-3f, 3.6f)
+            s.ax[i] = hubHit[0].coerceIn(-7f, 7f)
+            s.az[i] = hubHit[1].coerceIn(-3f, 3.6f)
         }
     }
 
+    private val dwellSelectors=Array(2) { DwellSelector() }
+    private val dwellUntil=LongArray(2)
     private fun updateDwell(now: Long) {
-        val s = state
-        if (!gazeOn) { dwellKey = -1; return }
-        val kind = s.hoverKind[1]
-        val ui = kind == Hit.TB || kind == Hit.KB || kind == Hit.CORNER || kind == Hit.BAR || kind == Hit.KBBAR
-        val key = if (ui) kind * 1000 + s.hoverIdx[1] else -1
-        if (key != dwellKey) { dwellKey = key; dwellStart = now; dwellFired = false }
-        else if (key >= 0 && !dwellFired && now - dwellStart >= 1200L) { dwellFired = true; dwellHoldUntil = now + 180L }
-        if (now < dwellHoldUntil) s.pressed[1] = true
+        val s=state
+        ui.dwellProgress=0f
+        for(i in 0..1) {
+            if(!s.dwell || i!=s.interaction.dominantHand) { dwellSelectors[i].reset(); continue }
+            val kind=s.hoverKind[i]
+            val eligible=kind==Hit.TB || kind==Hit.KB || kind==Hit.WIN
+            val key=if(eligible) "$kind:${s.hoverIdx[i]}" else null
+            if(dwellSelectors[i].update(key,s.ax[i],s.az[i],now,s.interaction.dwellMs.toLong(),s.width*.012f)) dwellUntil[i]=now+100
+            if(now<dwellUntil[i]) s.pressed[i]=true
+            s.dwellProgress[i]=maxOf(s.dwellProgress[i],dwellSelectors[i].progress)
+            ui.dwellProgress=maxOf(ui.dwellProgress,dwellSelectors[i].progress)
+        }
     }
 
     private val frameCb = object : Choreographer.FrameCallback {
@@ -1515,10 +1530,11 @@ class VrRoomActivity : Activity() {
             updateGaze()
             state.updateGeom()
             workspaceDisplays.budget(workspace.screens,state)
-            workspaceInteraction.tick()
             for (i in 0..1) pick(i)
+            state.dwellProgress.fill(0f)
+            workspaceInteraction.tick()
             updateDwell(now)
-            updatePoke()
+            // Keyboard input has one owner: captured pinch or dwell.
             for (i in 0..1) interact(i)
             if (!vrMode) return          // "Sair" foi tocado
             state.updateGeom()
@@ -1538,7 +1554,7 @@ class VrRoomActivity : Activity() {
 
     /** Painel de diagnóstico: mostra em que etapa o ARCore e o rastreador de mãos estão. */
     private fun refreshStatus(now: Long) {
-        if (!state.handsOn || now - lastHud < 250) return
+        if (now - lastHud < 250) return
         lastHud = now
         val ar = when (state.arState) {
             0 -> "desligado"
@@ -1552,7 +1568,12 @@ class VrRoomActivity : Activity() {
             else -> "rastreando"
         }
         val l1 = "GL ${state.glFps} fps | vídeo ${renderer.videoFrames} frames | ARCore: $ar  |  Mãos: $hs"
-        var l2 = tracker?.info() ?: "tracker não iniciado"
+        if(!state.interaction.diagnostics) {
+            val message=if(renderer.cameraFallback) "Camera2: sem rastreamento de mãos" else if(state.handsOn && !state.handValid.any { it }) "Mãos fora de vista · abra a mão para retomar" else ""
+            ui.drawStatus(message,if(workspace.enabled) workspaceInteraction.feedback else "Aponte · pince · solte")
+            return
+        }
+        var l2 = (tracker?.info() ?: "tracker não iniciado") + " | E:${state.handValid[0]}/${state.handPinch[0]} D:${state.handValid[1]}/${state.handPinch[1]} alvo:${state.hoverKind.joinToString()}"
         if(workspace.enabled) l2 += " | " + workspaceInteraction.feedback
         if (renderer.camErr.isNotEmpty()) l2 += " | ${renderer.camErr}"
         if (renderer.arErr.isNotEmpty()) l2 += " | erro AR: ${renderer.arErr}"
@@ -1593,7 +1614,8 @@ class VrRoomActivity : Activity() {
             k = k * 31 + ui.kbHov[1]
             k = k * 31 + ui.kbFocus
             k = k * 31 + ui.kbFlash
-            k = k * 31 + (if (ui.shift) 1 else 0)
+            k = k * 31 + (if (ui.shift) 1 else 0) + (if(ui.caps) 2 else 0) + ui.keyboardMode*4
+            k = k * 31 + (ui.dwellProgress*20).toInt()
             ui.kbBarHot = state.hoverKind[0] == Hit.KBBAR || state.hoverKind[1] == Hit.KBBAR || drag[0] == D_KBMOVE || drag[1] == D_KBMOVE
             k = k * 31 + (if (ui.kbBarHot) 1 else 0)
             if (k != sigKb) { sigKb = k; ui.drawKeyboard() }
@@ -1695,7 +1717,7 @@ class VrRoomActivity : Activity() {
                         pinch = s.handPinch[i]
                         closing = s.handClosing[i]
                         ratio = s.handRatio[i]
-                        val p = s.handPts[i]
+                        val p = s.handInputPts[i]
                         px = (p[12] + p[24]) * 0.5f      // meio da pinça (pontas do polegar e do indicador)
                         py = (p[13] + p[25]) * 0.5f
                         pz = (p[14] + p[26]) * 0.5f
@@ -1708,7 +1730,7 @@ class VrRoomActivity : Activity() {
                 // estabiliza o cursor: parado = bem suave (tira o tremor); movendo rápido = quase sem atraso
                 tmp2[0] = hitTmp[0]
                 tmp2[1] = hitTmp[1]
-                aimFilter[i].minCutoff = 2.2f - 1.4f * s.tolPct / 100f
+                aimFilter[i].minCutoff = 2.8f - 2f * s.interaction.pointerSmoothing
                 aimFilter[i].apply(tmp2, (System.nanoTime() - t0Ns) / 1e9f)
                 val aimS = tmp2[0]
                 val aimZ = tmp2[1]
@@ -1936,6 +1958,11 @@ class VrRoomActivity : Activity() {
         out[1] = v * (VrState.TEX_H - 1)
     }
 
+    private val keyFromHand=BooleanArray(2)
+    private val keyRepeatAt=LongArray(2)
+    private val keyRepeated=BooleanArray(2)
+    private val pendingKey=IntArray(2) { -1 }
+    private val pendingToolbar=IntArray(2) { -1 }
     private fun interact(i: Int) {
         val pressed = state.pressed[i]
         val rising = pressed && !prevPressed[i]
@@ -1944,9 +1971,12 @@ class VrRoomActivity : Activity() {
         val idx = state.hoverIdx[i]
 
         if (rising) {
+            keyFromHand[i]=state.laserHand[i]
+            keyRepeatAt[i]=SystemClock.uptimeMillis()+500
+            keyRepeated[i]=false
             when (kind) {
-                Hit.KB -> if (idx >= 0) pressKey(idx)
-                Hit.TB -> if (idx >= 0) toolbarAction(idx)
+                Hit.KB -> if (idx >= 0 && pendingKey[1-i]!=idx) pendingKey[i]=idx
+                Hit.TB -> if (idx >= 0 && pendingToolbar[1-i]!=idx) pendingToolbar[i]=idx
                 Hit.CORNER -> {
                     drag[i] = D_RESIZE
                     dStartW[i] = state.width
@@ -1964,6 +1994,7 @@ class VrRoomActivity : Activity() {
                     dOrb0[i][0] = state.kbAz; dOrb0[i][1] = state.kbEl
                 }
                 Hit.WIN -> if (!tDown[i]) {
+                    workspaceDisplays.activeInputId=null
                     if (mouseLaser == -1) mouseLaser = i
                     drag[i] = D_MOUSE
                     mousePos(i, tmp)
@@ -1975,6 +2006,10 @@ class VrRoomActivity : Activity() {
                 }
             }
         } else if (pressed) {
+            if(pendingKey[i]>=0 && ui.keys.getOrNull(pendingKey[i])?.type==VrUi.K_BKSP &&
+                (!keyFromHand[i] || state.handObserved[i]) && SystemClock.uptimeMillis()>=keyRepeatAt[i]) {
+                pressKey(pendingKey[i]); keyRepeated[i]=true; keyRepeatAt[i]=SystemClock.uptimeMillis()+100
+            }
             when (drag[i]) {
                 D_RESIZE -> state.width =
                     (dStartW[i] + 2f * dSide[i] * (state.ax[i] - dStartAx[i])).coerceIn(1.2f, 7.5f)
@@ -2006,13 +2041,19 @@ class VrRoomActivity : Activity() {
             }
         }
         if (falling) {
+            // hState resets on loss, so hand validity must be checked against captured origin.
+            if(pendingKey[i]>=0 && !keyRepeated[i] && (!keyFromHand[i] || state.handValid[i])) pressKey(pendingKey[i])
+            if(pendingToolbar[i]>=0 && (!keyFromHand[i] || state.handValid[i])) toolbarAction(pendingToolbar[i])
+            pendingKey[i]=-1; pendingToolbar[i]=-1
             if (drag[i] == D_MOUSE && tDown[i]) {
-                touchEvent(2, i)
+                if(keyFromHand[i] && !state.handValid[i]) releaseTouches() else touchEvent(2, i)
                 tDown[i] = false
                 mouseLaser = if (tDown[1 - i]) 1 - i else -1
             }
+            if(drag[i]==D_KBMOVE) savePrefs()
             drag[i] = D_NONE
         }
+        state.inputCaptured[i]=pressed && (drag[i]!=D_NONE || pendingKey[i]>=0 || pendingToolbar[i]>=0)
         prevPressed[i] = pressed
     }
 
@@ -2073,6 +2114,7 @@ class VrRoomActivity : Activity() {
         val action = when (kind) {
             0 -> if (n == 1) MotionEvent.ACTION_DOWN else (MotionEvent.ACTION_POINTER_DOWN or (idx shl MotionEvent.ACTION_POINTER_INDEX_SHIFT))
             2 -> if (n == 1) MotionEvent.ACTION_UP else (MotionEvent.ACTION_POINTER_UP or (idx shl MotionEvent.ACTION_POINTER_INDEX_SHIFT))
+            3 -> MotionEvent.ACTION_CANCEL
             else -> MotionEvent.ACTION_MOVE
         }
         if (action == MotionEvent.ACTION_DOWN) downTime = now
@@ -2086,7 +2128,8 @@ class VrRoomActivity : Activity() {
     private fun touchAny(): Boolean = tDown[0] || tDown[1]
 
     private fun releaseTouches() {
-        for (k in 0..1) if (tDown[k]) { touchEvent(2, k); tDown[k] = false }
+        if(tDown.any { it }) touchEvent(3,if(tDown[0]) 0 else 1)
+        tDown.fill(false)
         mouseLaser = -1
     }
 
@@ -2147,23 +2190,21 @@ class VrRoomActivity : Activity() {
         sendScroll(x, y, if (up) 2f else -2f)
     }
 
-    private fun webDispatchKey(e: KeyEvent) {
-        web?.dispatchKeyEvent(e)
+    private fun webDispatchKey(e: KeyEvent): Boolean {
+        return if(workspaceDisplays.activeInputId!=null) workspaceDisplays.key(e)
+        else (tvBox?.findFocus() ?: web)?.dispatchKeyEvent(e)==true
     }
 
-    private fun webKey(code: Int) {
-        val t = SystemClock.uptimeMillis()
-        webDispatchKey(KeyEvent(t, t, KeyEvent.ACTION_DOWN, code, 0))
-        webDispatchKey(KeyEvent(t, t, KeyEvent.ACTION_UP, code, 0))
+    private fun webKey(code: Int): Boolean {
+        val t=SystemClock.uptimeMillis()
+        val down=webDispatchKey(KeyEvent(t,t,KeyEvent.ACTION_DOWN,code,0))
+        val up=webDispatchKey(KeyEvent(t,t,KeyEvent.ACTION_UP,code,0))
+        return down || up
     }
 
-    private fun webChar(c: Char) {
-        val evs = kcm.getEvents(charArrayOf(c))
-        if (evs != null) {
-            for (e in evs) webDispatchKey(e)
-        } else {
-            web?.onCreateInputConnection(EditorInfo())?.commitText(c.toString(), 1)
-        }
+    private fun commitText(text: String): Boolean {
+        if (workspaceDisplays.activeInputId != null) return workspaceDisplays.text(text)
+        return VrTextInput.commit(tvBox ?: web ?: return false,text)
     }
 
     // =================================================================== teclado virtual
@@ -2175,38 +2216,49 @@ class VrRoomActivity : Activity() {
     }
 
     /** O teclado virtual digita na telona quando o Moonlight está aberto (senão, no navegador). */
-    private fun moonLive(): Boolean = tvMoon?.isLive() == true && !kbTargetUrl
+    private fun moonLive(): Boolean = tvMoon?.isLive() == true && !kbTargetUrl && workspaceDisplays.activeInputId == null
 
-    private fun typeText(s: String) {
-        if (kbTargetUrl) urlText.append(s) else if (moonLive()) tvMoon?.sendText(s) else for (ch in s) webChar(ch)
+    private fun typeText(s: String): Boolean {
+        if (kbTargetUrl) { urlText.append(s); return true }
+        if (moonLive()) { tvMoon?.sendText(s); return true }
+        return commitText(s)
     }
 
-    private fun backspace() {
-        if (kbTargetUrl) {
-            if (urlText.isNotEmpty()) urlText.deleteCharAt(urlText.length - 1)
-        } else if (moonLive()) tvMoon?.sendVk(0x08) else webKey(KeyEvent.KEYCODE_DEL)
+    private fun backspace(): Boolean {
+        if(kbTargetUrl) { if(urlText.isNotEmpty()) urlText.deleteCharAt(urlText.length-1); return true }
+        if(moonLive()) { tvMoon?.sendVk(0x08); return true }
+        return webKey(KeyEvent.KEYCODE_DEL)
     }
 
-    private fun enterKey() {
-        if (kbTargetUrl) {
-            go(urlText.toString())
-            showKeyboard(false)
-        } else if (moonLive()) tvMoon?.sendVk(0x0D) else webKey(KeyEvent.KEYCODE_ENTER)
+    private fun enterKey(): Boolean {
+        if(kbTargetUrl) { go(urlText.toString()); showKeyboard(false); return true }
+        if(moonLive()) { tvMoon?.sendVk(0x0D); return true }
+        return webKey(KeyEvent.KEYCODE_ENTER)
     }
 
     private fun pressKey(idx: Int) {
-        val k = ui.keys[idx]
+        val k = ui.keys.getOrNull(idx) ?: return
         ui.kbFlash = idx
         flashUntil = SystemClock.uptimeMillis() + 130
         when (k.type) {
             VrUi.K_CHAR -> {
-                typeText(if (ui.shift) k.upper else k.lower)
+                val text=if (ui.shift xor ui.caps) k.upper else k.lower
+                val composed=if(ui.accent.isEmpty()) text else java.text.Normalizer.normalize(text+ui.accent,java.text.Normalizer.Form.NFC)
+                if(!typeText(composed)) { ui.kbFlash=-1; toast("Selecione um campo de texto no display de destino") }
+                ui.accent=""
                 ui.shift = false
             }
-            VrUi.K_SPACE -> typeText(" ")
+            VrUi.K_MODE -> { pendingKey.fill(-1); ui.switchKeyboard(k.vk); sigKb=-1 }
+            VrUi.K_CAPS -> ui.caps=!ui.caps
+            VrUi.K_ACCENT -> {
+                if(k.lower=="Acentos") { pendingKey.fill(-1); ui.switchKeyboard(4) }
+                else { ui.accent=mapOf("´" to "\u0301","`" to "\u0300","^" to "\u0302","~" to "\u0303","¨" to "\u0308")[k.lower] ?: ""; ui.switchKeyboard(0) }
+            }
+            VrUi.K_ARROW -> if(moonLive()) tvMoon?.sendVk(when(k.vk) { 21->0x25; 19->0x26; 22->0x27; else->0x28 }) else webKey(k.vk)
+            VrUi.K_SPACE -> if(!typeText(" ")) ui.kbFlash=-1
             VrUi.K_DOTCOM -> typeText(".com")
-            VrUi.K_BKSP -> backspace()
-            VrUi.K_ENTER -> enterKey()
+            VrUi.K_BKSP -> if(!backspace()) ui.kbFlash=-1
+            VrUi.K_ENTER -> if(!enterKey()) ui.kbFlash=-1
             VrUi.K_SHIFT -> ui.shift = !ui.shift
             VrUi.K_CLOSE -> showKeyboard(false)
             VrUi.K_FN -> {                                              // Esc, Tab, F1-F12
@@ -2228,6 +2280,13 @@ class VrRoomActivity : Activity() {
     private fun setScreenHidden(h: Boolean) { state.screenHidden = h; ui.screenHidden = h; ui.setMenu(ui.menuOpen) }
 
     private fun toolbarAction(id: Int) {
+        if(ui.exitConfirm) {
+            ui.exitConfirm=false; sigTb=-1
+            if(id==VrUi.B_EXIT) { exitVr(); return }
+            if(id==VrUi.B_BACK) return
+        } else if(id==VrUi.B_EXIT && state.interaction.confirmImportant) {
+            ui.exitConfirm=true; sigTb=-1; ui.drawToolbar(); return
+        }
         ui.tbFlash = id
         tbFlashUntil = SystemClock.uptimeMillis() + 130
         when (id) {

@@ -85,6 +85,12 @@ class VrState {
     @Volatile var pcSendPinch = true  // enviar a PINÇA (o driver a usa como trigger)
     @Volatile var fullscreen = false  // tela cheia: só a página/stream ocupando o celular inteiro, com toque direto
     @Volatile var fsFill = false      // tela cheia: esticar até as bordas (senão mantém a proporção 16:9)
+    val inputCaptured=BooleanArray(2)
+    val dwellProgress=FloatArray(2)
+    val clickSentAt=LongArray(2)
+    val interaction = InteractionSettings()
+    val handInputPts = Array(2) { FloatArray(63) }
+    val handObserved = BooleanArray(2)
     @Volatile var dwell = false       // clicar olhando (~1,2 s) nos botões e no teclado, para quem está sem controle/mãos
     val gaze = FloatArray(3)          // direção do olhar (frente da cabeça) no referencial da cena, escrita pela GL thread
     @Volatile var glFps = 0
@@ -329,7 +335,7 @@ class VrState {
         var px = 0f; var py = 0f; var pz = 0f                                    // pivô da órbita
         if (handsOn && handState >= 2) {
             // com as mãos ligadas o teclado fica ao alcance (a ~60 cm), para digitar tocando ou pinçando as teclas
-            kx = headX; kyy = headY + 0.62f; kz = headZ - 0.12f; kw = 0.70f
+            kx = headX; kyy = headY + interaction.keyboardDistance; kz = headZ - 0.12f; kw = 0.70f
             px = headX; py = headY; pz = headZ
         } else { kx = wx; kyy = ky; kz = -0.85f; kw = KB_METERS }
         val d = (Math.PI / 180.0).toFloat()
@@ -339,6 +345,7 @@ class VrState {
         kx = px + o[0] * rx0 + o[1] * ry0 + o[2] * rz0
         kyy = py + o[3] * rx0 + o[4] * ry0 + o[5] * rz0
         kz = pz + o[6] * rx0 + o[7] * ry0 + o[8] * rz0
+        kw *= interaction.keyboardScale
         kb.set(kx, kyy, kz, kw, kw * KB_H / KB_W)
     }
 

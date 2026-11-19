@@ -7,6 +7,9 @@ import android.content.Context
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.view.MotionEvent
+import android.view.KeyEvent
+import android.view.inputmethod.EditorInfo
+import android.os.Looper
 import android.view.Surface
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -17,6 +20,7 @@ import android.graphics.Color
 /** Every window has its own compositor, WebView and source URL. No cloned desktop textures. */
 class WorkspaceDisplays(private val activity: Activity) {
     private data class Display(val virtual: VirtualDisplay,val presentation: Presentation,val web: WebView,val status: TextView,val surface: Surface,var source: String)
+    var activeInputId: String? = null
     private var lastBudget=0L
     private val displays=mutableMapOf<String,Display>()
     @SuppressLint("SetJavaScriptEnabled")
@@ -42,7 +46,28 @@ class WorkspaceDisplays(private val activity: Activity) {
         } catch(e: Exception) { vd.release(); screen.connection="Erro: ${e.javaClass.simpleName}" }
     }
     fun navigate(screen: VirtualScreen) { displays[screen.id]?.let { it.status.text=screen.name; if(it.source!=screen.source) { it.source=screen.source; it.web.loadUrl(screen.source) } } }
-    fun touch(id: String,ev: MotionEvent) { displays[id]?.presentation?.window?.decorView?.dispatchTouchEvent(ev) }
+    fun touch(id: String,ev: MotionEvent): Boolean {
+        check(Looper.myLooper()==Looper.getMainLooper()) { "Display input must run on UI thread" }
+        val d=displays[id] ?: return false
+        val root=d.presentation.window?.decorView ?: return false
+        if(root.width<=0 || root.height<=0) return false
+        val copy=MotionEvent.obtain(ev)
+        return try {
+            copy.source=if(ev.actionMasked==MotionEvent.ACTION_HOVER_MOVE) android.view.InputDevice.SOURCE_MOUSE else android.view.InputDevice.SOURCE_TOUCHSCREEN
+            copy.setLocation(ev.x*(root.width-1)/(VrState.TEX_W-1),ev.y*(root.height-1)/(VrState.TEX_H-1))
+            if(ev.actionMasked==MotionEvent.ACTION_DOWN) { activeInputId=id; d.web.requestFocus() }
+            if(ev.actionMasked==MotionEvent.ACTION_HOVER_MOVE) root.dispatchGenericMotionEvent(copy) else root.dispatchTouchEvent(copy)
+        } finally { copy.recycle() }
+    }
+    fun text(text: String): Boolean {
+        val d=displays[activeInputId] ?: return false
+        val target=d.presentation.window?.decorView?.findFocus() ?: d.web
+        return VrTextInput.commit(target,text)
+    }
+    fun key(event: KeyEvent): Boolean {
+        val d=displays[activeInputId] ?: return false
+        return d.presentation.window?.decorView?.dispatchKeyEvent(event) == true
+    }
     fun retain(ids: Set<String>) { displays.keys.toList().filterNot { it in ids }.forEach { remove(it) } }
     fun budget(screens: List<VirtualScreen>,state: VrState) {
         val now=android.os.SystemClock.uptimeMillis()
@@ -60,6 +85,6 @@ class WorkspaceDisplays(private val activity: Activity) {
     }
     fun resume() { displays.values.forEach { if(it.surface.isValid) it.virtual.surface=it.surface; it.web.onResume(); it.web.evaluateJavascript("window.stormvrPaused=false",null) } }
     fun pause() { displays.values.forEach { it.web.evaluateJavascript("window.stormvrPaused=true",null); it.web.onPause(); it.virtual.surface=null } }
-    fun remove(id: String) { displays.remove(id)?.let { it.web.stopLoading(); it.presentation.dismiss(); it.web.destroy(); it.virtual.release() } }
+    fun remove(id: String) { if(activeInputId==id) activeInputId=null; displays.remove(id)?.let { it.web.stopLoading(); it.presentation.dismiss(); it.web.destroy(); it.virtual.release() } }
     fun close() { displays.keys.toList().forEach { remove(it) } }
 }

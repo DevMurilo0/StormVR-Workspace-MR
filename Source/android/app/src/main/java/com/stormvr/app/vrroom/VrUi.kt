@@ -62,6 +62,10 @@ class VrUi {
         const val K_SPACE = 4
         const val K_CLOSE = 5
         const val K_DOTCOM = 6
+        const val K_MODE = 8
+        const val K_CAPS = 9
+        const val K_ACCENT = 10
+        const val K_ARROW = 11
         const val K_FN = 7            // atalhos: Esc, Tab, F1-F12 (vk = tecla do Windows)
 
         // botões da barra de ferramentas
@@ -100,7 +104,8 @@ class VrUi {
     )
 
     @Volatile var screenHidden = false
-    private fun labelOf(i: Int): String = if (i == B_MENU && menuOpen) "Fechar" else if (i == B_HIDE && screenHidden) "Abrir tela" else labels[i]
+    var exitConfirm=false
+    private fun labelOf(i: Int): String = if(exitConfirm && i==B_EXIT) "Confirmar saída" else if(exitConfirm && i==B_BACK) "Cancelar" else if (i == B_MENU && menuOpen) "Fechar" else if (i == B_HIDE && screenHidden) "Abrir tela" else labels[i]
 
     /** Menu aberto: aparecem todas as opções, os cantos de redimensionar e o painel de diagnóstico. Fechado: só Voltar, Início, Home, Teclado e Menu. */
     @Volatile var menuOpen = false
@@ -146,7 +151,7 @@ class VrUi {
     private fun layoutToolbar() {
         paint.textSize = 30f
         val pad = 12f
-        val gap = 8f
+        val gap = 12f
         val top = 12f
         val bot = VrState.TB_H - 12f
         for (r in tbRects) r.setEmpty()
@@ -259,25 +264,47 @@ class VrUi {
     // ---------------- teclado ----------------
     private fun ch(l: String, u: String) = Key(K_CHAR, l, u)
 
+    var keyboardMode=0
+        private set
+    var caps=false
+    var accent=""
+    var dwellProgress=0f
+    fun switchKeyboard(mode: Int) { keyboardMode=mode; buildKeyboard(); kbFocus=defaultFocus(); kbHov.fill(-1); kbFlash=-1; drawKeyboard() }
     private fun buildKeyboard() {
-        // linha de atalhos (pequena): Esc, F1-F12, Tab
-        rows.add(listOf(Key(K_FN, "Esc", "Esc", 1.3f, 0x1B)) + (1..12).map { Key(K_FN, "F$it", "F$it", 1f, 0x70 + it - 1) } + Key(K_FN, "Tab", "Tab", 1.3f, 0x09))
-        val digits = "1234567890"
-        val syms = "!@#$%^&*()"
-        rows.add(digits.indices.map { Key(K_CHAR, digits[it].toString(), syms[it].toString()) } +
-            Key(K_BKSP, "", "", 2f))
-        rows.add("qwertyuiop".map { ch(it.toString(), it.uppercaseChar().toString()) } + ch("-", "_"))
-        rows.add("asdfghjkl".map { ch(it.toString(), it.uppercaseChar().toString()) } +
-            ch("ç", "Ç") + Key(K_ENTER, "", "", 2f))
-        rows.add(listOf(Key(K_SHIFT, "", "", 2f)) +
-            "zxcvbnm".map { ch(it.toString(), it.uppercaseChar().toString()) } +
-            listOf(ch(",", ";"), ch(".", ":"), ch("/", "?")))
-        rows.add(listOf(Key(K_CLOSE, "", "", 2f), Key(K_FN, "Win/⌘", "Win/⌘", 1.8f, 0x5B), ch("@", "#"), Key(K_SPACE, " ", " ", 5f),
-            Key(K_DOTCOM, ".com", ".com", 2f)))
+        rows.clear(); keys.clear(); rowOf.clear()
+        when(keyboardMode) {
+            0 -> {
+                rows.add("qwertyuiop".map { ch(it.toString(),it.uppercaseChar().toString()) })
+                rows.add("asdfghjklç".map { ch(it.toString(),it.uppercaseChar().toString()) })
+                rows.add(listOf(Key(K_SHIFT,"Shift"))+"zxcvbnm".map { ch(it.toString(),it.uppercaseChar().toString()) }+Key(K_BKSP,"Apagar",weight=1.6f))
+                rows.add(listOf(Key(K_MODE,"123",vk=1),Key(K_MODE,"Símb.",vk=2),Key(K_ACCENT,"Acentos"),Key(K_CAPS,"Caps"),Key(K_SPACE,"Espaço",weight=3f),ch(",",";"),ch(".",":"),Key(K_ENTER,"Enter",weight=1.5f)))
+            }
+            1 -> {
+                rows.add("1234567890".map { ch(it.toString(),it.toString()) })
+                rows.add("+-*/=()%.,".map { ch(it.toString(),it.toString()) })
+                rows.add(listOf(Key(K_ARROW,"←",vk=21),Key(K_ARROW,"↑",vk=19),Key(K_ARROW,"↓",vk=20),Key(K_ARROW,"→",vk=22),Key(K_BKSP,"Apagar",weight=2f),Key(K_ENTER,"Enter",weight=2f)))
+            }
+            2 -> {
+                rows.add("@#&!?_-/\\".map { ch(it.toString(),it.toString()) })
+                rows.add("()[]{}<>:;".map { ch(it.toString(),it.toString()) })
+                rows.add("áàâãéêíóôõúüç".map { ch(it.toString(),it.uppercaseChar().toString()) })
+            }
+            3 -> {
+                rows.add((1..6).map { Key(K_FN,"F$it",vk=0x70+it-1) })
+                rows.add((7..12).map { Key(K_FN,"F$it",vk=0x70+it-1) })
+                rows.add(listOf(Key(K_FN,"Esc",vk=0x1b),Key(K_FN,"Tab",vk=9),Key(K_FN,"Win",vk=0x5b),Key(K_CAPS,"Caps"),Key(K_BKSP,"Apagar"),Key(K_ENTER,"Enter")))
+            }
+            4 -> {
+                rows.add("áàâãäéèêëíìîï".map { ch(it.toString(),it.uppercaseChar().toString()) })
+                rows.add("óòôõöúùûüç".map { ch(it.toString(),it.uppercaseChar().toString()) })
+                rows.add(listOf("´","`","^","~","¨").map { Key(K_ACCENT,it) })
+            }
+        }
+        rows.add(listOf(Key(K_CLOSE,"Fechar"),Key(K_MODE,"ABC",vk=0),Key(K_MODE,"123",vk=1),Key(K_MODE,"Símb.",vk=2),Key(K_MODE,"Avançado",vk=3),Key(K_SPACE,"Espaço",weight=2.4f),Key(K_BKSP,"Apagar"),Key(K_ENTER,"Enter")))
 
         val pad = 16f
-        val gap = 8f
-        val rowH = (VrState.KB_H - KB_BAR_ZONE - 2 * pad - 5 * gap) / 6f
+        val gap = 12f
+        val rowH = (VrState.KB_H - KB_BAR_ZONE - 2 * pad - (rows.size-1) * gap) / rows.size
         for ((ri, row) in rows.withIndex()) {
             var sum = 0f
             for (k in row) sum += k.weight
@@ -309,7 +336,7 @@ class VrUi {
         return -1
     }
 
-    fun defaultFocus(): Int = rowOf.indexOf(3) + 4
+    fun defaultFocus(): Int = keys.indices.firstOrNull { keys[it].lower=="f" } ?: 0
 
     /** Navegação pelo D-pad: dx = -1/+1 (esq/dir), dy = -1/+1 (cima/baixo). */
     fun navigate(from: Int, dx: Int, dy: Int): Int {
@@ -334,14 +361,14 @@ class VrUi {
     }
 
     private fun keyLabel(k: Key): String = when (k.type) {
-        K_CHAR -> if (shift) k.upper else k.lower
+        K_CHAR -> if (shift xor caps) k.upper else k.lower
         K_BKSP -> "Apagar"
         K_ENTER -> "Enter"
         K_SHIFT -> "Shift"
         K_SPACE -> "Espaço"
         K_CLOSE -> "Fechar"
         K_DOTCOM -> ".com"
-        K_FN -> k.lower
+        K_MODE, K_CAPS, K_ACCENT, K_ARROW, K_FN -> k.lower
         else -> ""
     }
 
@@ -362,7 +389,7 @@ class VrUi {
                 paint.color = when {
                     kbFlash == i -> Color.WHITE
                     hov -> Color.rgb(157, 78, 255)
-                    k.type == K_SHIFT && shift -> Color.rgb(124, 58, 214)
+                    (k.type == K_SHIFT && shift) || (k.type == K_CAPS && caps) -> Color.rgb(124, 58, 214)
                     k.type == K_FN -> Color.rgb(48, 28, 86)
                     k.type == K_CHAR || k.type == K_SPACE -> Color.rgb(62, 62, 78)
                     else -> Color.rgb(44, 44, 58)
@@ -377,9 +404,14 @@ class VrUi {
                 }
                 val label = keyLabel(k)
                 paint.color = if (kbFlash == i) Color.BLACK else Color.WHITE
-                paint.textSize = if (k.type == K_FN) 26f else if (label.length > 1) 32f else 46f
+                paint.textSize = if (label.length > 5) 26f else if (label.length > 1) 30f else 48f
                 paint.textAlign = Paint.Align.CENTER
                 c.drawText(label, k.r.centerX(), textY(k.r), paint)
+                if(hov && dwellProgress>0f) {
+                    paint.style=Paint.Style.STROKE; paint.strokeWidth=5f; paint.color=Color.rgb(100,240,200)
+                    c.drawArc(k.r.right-28,k.r.top+8,k.r.right-8,k.r.top+28,-90f,360f*dwellProgress,false,paint)
+                    paint.style=Paint.Style.FILL
+                }
             }
         }
     }

@@ -7,6 +7,8 @@ import kotlin.math.*
 /** Shares the existing filtered hand/gamepad rays, not a second camera or MediaPipe instance. */
 class WorkspaceInteraction(private val workspace: WorkspaceManager,private val state: VrState,private val displays: WorkspaceDisplays) {
     private data class Action(val screen: VirtualScreen,val kind: Int,val s: Float,val z: Float,val width: Float,val x: Float,val height: Float,val started: Long,val hand: Boolean)
+    private val captures=Array(2) { ClickCapture() }
+    private val dwell=Array(2) { DwellSelector() }
     private val actions=arrayOfNulls<Action>(2)
     private var scaleScreen: String?=null
     private var span0=0f
@@ -18,19 +20,19 @@ class WorkspaceInteraction(private val workspace: WorkspaceManager,private val s
     private val point=FloatArray(3)
     var feedback="Aponte para uma tela"
         private set
-    fun cancel() { scaleScreen=null; for(i in 0..1) { actions[i]?.let { send(it,MotionEvent.ACTION_CANCEL,it.s,it.z) }; actions[i]=null; wasDown[i]=false } }
-    private fun send(a: Action,kind: Int,s: Float,z: Float) {
+    fun cancel() { scaleScreen=null; for(i in 0..1) { actions[i]?.takeIf { it.kind==0 }?.let { send(it,MotionEvent.ACTION_CANCEL,captures[i].x,captures[i].y) }; captures[i].cancel(); dwell[i].reset(); actions[i]=null; wasDown[i]=false } }
+    private fun send(a: Action,kind: Int,s: Float,z: Float): Boolean {
         val g=a.screen.pose.win
-        val x=((s-g.cx)/g.w+.5f).coerceIn(0f,1f)*VrState.TEX_W
-        val y=(.5f-(z-g.cz)/g.h).coerceIn(0f,1f)*VrState.TEX_H
+        val x=SurfaceCoordinates.pixel(s,g.cx,g.w,VrState.TEX_W)
+        val y=SurfaceCoordinates.pixel(z,g.cz,g.h,VrState.TEX_H,true)
         val ev=MotionEvent.obtain(a.started,SystemClock.uptimeMillis(),kind,x,y,0)
-        displays.touch(a.screen.id,ev); ev.recycle()
+        return try { displays.touch(a.screen.id,ev) } finally { ev.recycle() }
     }
     fun tick() {
         if(!workspace.enabled) return
         val selected=workspace.selected
         val dual=state.twoHands && state.handValid[0] && state.handValid[1] && state.handPinch[0] && state.handPinch[1] &&
-            selected!=null && !selected.locked && (actions.any { it?.screen?.id == selected.id } || scaleScreen==selected.id)
+            selected!=null && !selected.locked && (actions.any { it?.screen?.id == selected.id && it.kind != 0 } || scaleScreen==selected.id)
         if(dual && selected!=null) {
             val left=state.ball[0]; val right=state.ball[1]
             val span=sqrt((left[0]-right[0]).pow(2)+(left[1]-right[1]).pow(2)+(left[2]-right[2]).pow(2))
@@ -48,13 +50,18 @@ class WorkspaceInteraction(private val workspace: WorkspaceManager,private val s
         if(scaleScreen!=null) { scaleScreen=null; wasDown.fill(true) }
 
         workspace.hoverId=null
-        for(i in 0..1) {
+        for(order in 0..1) {
+            val i=if(order==0) state.interaction.dominantHand else 1-state.interaction.dominantHand
             val down=state.pressed[i]
             state.surfPoint(state.ax[i],state.az[i],0f,point)
             val ox=state.rox[i]; val oy=state.roy[i]; val oz=state.roz[i]
             val dx=point[0]-ox; val dy=point[1]-oy; val dz=point[2]-oz
             var action=actions[i]
             if(action==null) {
+                // Foreground keyboard and toolbar own their rays; never press through them.
+                if(state.inputCaptured[i] || state.hoverKind[i]==Hit.KB || state.hoverKind[i]==Hit.KBBAR || state.hoverKind[i]==Hit.TB) {
+                    wasDown[i]=down; dwell[i].reset(); continue
+                }
                 var best: VirtualScreen?=null; var bestDistance=Float.MAX_VALUE; var bs=0f; var bz=0f
                 for(screen in workspace.screens) {
                     val p=screen.pose; if(!screen.visible) continue
@@ -65,15 +72,42 @@ class WorkspaceInteraction(private val workspace: WorkspaceManager,private val s
                     val dist=(point[0]-ox).pow(2)+(point[1]-oy).pow(2)+(point[2]-oz).pow(2)
                     if(dist<bestDistance) { best=screen; bestDistance=dist; bs=hit[0]; bz=hit[1] }
                 }
-                if(best!=null) { workspace.hoverId=best.id; workspace.hoverS=bs; workspace.hoverZ=bz }
-                best?.takeIf { down && !wasDown[i] }?.let { screen ->
+                // Compare the main visible monitor too, so a rear display cannot intercept it.
+                if(best!=null && !state.screenHidden && state.intersectSurface(ox,oy,oz,dx,dy,dz,hit) &&
+                    abs(hit[0]-state.win.cx)<=state.win.w/2 && abs(hit[1]-state.win.cz)<=state.win.h/2) {
+                    state.surfPoint(hit[0],hit[1],0f,point)
+                    val mainDistance=(point[0]-ox).pow(2)+(point[1]-oy).pow(2)+(point[2]-oz).pow(2)
+                    if(mainDistance<bestDistance) best=null
+                }
+                if(best!=null) {
+                    best.pose.surfPoint(bs,bz,.014f,point)
+                    state.hitX[i]=point[0]; state.hitY[i]=point[1]; state.hitZ[i]=point[2]
+                    if(!down) send(Action(best,0,bs,bz,best.pose.width,0f,0f,SystemClock.uptimeMillis(),false),MotionEvent.ACTION_HOVER_MOVE,bs,bz); state.hoverKind[i]=Hit.NONE; workspace.hoverId=best.id; workspace.hoverS=bs; workspace.hoverZ=bz }
+                val dwellClick=!down && state.dwell && i==state.interaction.dominantHand && dwell[i].update(best?.id,bs,bz,
+                    SystemClock.uptimeMillis(),state.interaction.dwellMs.toLong(),.025f)
+                state.dwellProgress[i]=dwell[i].progress
+                if(dwellClick && best!=null && actions.none { it?.screen?.id==best?.id }) {
+                    val a=Action(best,0,bs,bz,best.pose.width,best.pose.wx,best.pose.wz,SystemClock.uptimeMillis(),false)
+                    if(send(a,MotionEvent.ACTION_DOWN,bs,bz)) {
+                        val accepted=send(a,MotionEvent.ACTION_UP,bs,bz)
+                        if(accepted) state.clickSentAt[i]=SystemClock.uptimeMillis()
+                        feedback=if(accepted) "Clique enviado" else "Destino recusou o clique"
+                    }
+                }
+                best?.takeIf { down && !wasDown[i] && actions.none { a -> a?.screen?.id==it.id } }?.let { screen ->
                     workspace.selectedId=screen.id
                     val p=screen.pose; val g=p.win
-                    val corner=abs(bs-g.cx)>g.w*.43f && abs(bz-g.cz)>g.h*.39f
+                    val corner=abs(bs-g.cx)>g.w*.46f && abs(bz-g.cz)>g.h*.46f && (abs(bs-g.cx)>g.w/2 || abs(bz-g.cz)>g.h/2)
                     val kind=if(screen.locked) 0 else if(corner) 2 else if(bz>g.cz+g.h/2f) 1 else 0
                     action=Action(screen,kind,bs,bz,p.width,p.wx,p.wz,SystemClock.uptimeMillis(),state.handsOn && state.handValid[i])
                     actions[i]=action
-                    if(kind==0) send(action!!,MotionEvent.ACTION_DOWN,bs,bz)
+                    if(kind==0) {
+                        captures[i].update(true,true,true,bs,bz,p.width*.012f)
+                        if(!send(action!!,MotionEvent.ACTION_DOWN,bs,bz)) {
+                            captures[i].cancel(); actions[i]=null; action=null
+                            feedback="Destino indisponível"; wasDown[i]=down; state.pressed[i]=false; return@let
+                        }
+                    }
                     feedback=when(kind) { 1 -> "Movendo ${screen.name}"; 2 -> "Redimensionando ${screen.name}"; else -> "Interagindo com ${screen.name}" }
                 }
             }
@@ -82,16 +116,25 @@ class WorkspaceInteraction(private val workspace: WorkspaceManager,private val s
                 workspace.hoverId=a.screen.id
                 val intersects=p.intersectSurface(ox,oy,oz,dx,dy,dz,hit)
                 if(intersects) { workspace.hoverS=hit[0]; workspace.hoverZ=hit[1] }
-                if(!down || a.screen !in workspace.screens || !a.screen.visible) {
-                    if(a.kind==0) send(a,if(intersects && (!a.hand || state.handValid[i])) MotionEvent.ACTION_UP else MotionEvent.ACTION_CANCEL,if(intersects) hit[0] else a.s,if(intersects) hit[1] else a.z)
-                    actions[i]=null; feedback="Gesto concluído"
+                if(!down || (a.hand && !state.handValid[i]) || a.screen !in workspace.screens || !a.screen.visible) {
+                    if(a.kind==0) {
+                        val valid=a.screen in workspace.screens && a.screen.visible && (!a.hand || state.handValid[i])
+                        val e=captures[i].update(false,valid,intersects,hit[0],hit[1],p.width*.012f)
+                        val sent=send(a,if(e==ClickCapture.Event.CANCEL) MotionEvent.ACTION_CANCEL else MotionEvent.ACTION_UP,captures[i].x,captures[i].y)
+                        if(sent && e!=ClickCapture.Event.CANCEL) state.clickSentAt[i]=SystemClock.uptimeMillis()
+                        feedback=if(e==ClickCapture.Event.CANCEL) "Rastreamento perdido · cancelado" else if(sent) "Clique enviado" else "Destino recusou o clique"
+                    } else feedback="Posição atualizada"
+                    actions[i]=null
                 } else if(intersects) {
                     if(a.kind==1 && !a.screen.locked) { p.wx=a.x+hit[0]-a.s; p.wz=a.height+hit[1]-a.z }
                     if(a.kind==2 && !a.screen.locked) p.width=(a.width+2f*(hit[0]-a.s)*sign(a.s-p.win.cx)).coerceIn(.6f,7.5f)
-                    if(a.kind==0 && SystemClock.uptimeMillis()-a.started>state.clickFreezeMs) send(a,MotionEvent.ACTION_MOVE,hit[0],hit[1])
+                    if(a.kind==0 && captures[i].update(true,true,true,hit[0],hit[1],p.width*.012f)==ClickCapture.Event.MOVE) {
+                        send(a,MotionEvent.ACTION_MOVE,captures[i].x,captures[i].y); feedback="Arrastando ${a.screen.name}"
+                    }
                     p.updateGeom()
                 }
                 // Other input methods remain active, but this ray must not click through the screen.
+                state.hoverKind[i]=Hit.NONE
                 state.pressed[i]=false
             }
             wasDown[i]=down

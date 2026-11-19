@@ -1,6 +1,7 @@
 package com.stormvr.app.vrroom
 
 import android.content.Context
+import android.app.AlertDialog
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
@@ -62,16 +63,32 @@ class WorkspacePanel(ctx: Context,private val manager: WorkspaceManager,private 
             slider("Rotação (°)",p.scrYaw,-180f,180f) { if(!screen.locked) p.scrYaw=it }
             body.addView(button(if(p.curved) "Usar tela plana" else "Usar tela curva") { p.curved=!p.curved; changed(); refresh() })
             slider("Curvatura",p.workspaceCurve,.1f,1.5f) { p.workspaceCurve=it }
-            body.addView(button("Remover ${screen.name}") { manager.remove(screen.id); changed(); refresh() })
+            body.addView(button("Remover ${screen.name}") {
+                if(state.interaction.confirmImportant) AlertDialog.Builder(context).setMessage("Remover ${screen.name} do layout?").setPositiveButton("Confirmar") { _,_ -> manager.remove(screen.id); changed(); refresh() }.setNegativeButton("Cancelar",null).show()
+                else { manager.remove(screen.id); changed(); refresh() }
+            })
         }
         slider("Opacidade da interface",manager.uiOpacity,.7f,1f) { manager.uiOpacity=it }
         body.addView(label("Desempenho · alterações de vídeo valem na próxima conexão"))
         listOf("Economia · 720p / 20 fps","Equilibrado · 720p / 30 fps","Qualidade · 1080p / 30 fps").forEachIndexed { i,n -> body.addView(button(n) { performance(i) }) }
         body.addView(CheckBox(context).apply { text="Rastreamento das mãos"; setTextColor(ink); isChecked=state.handsOn; setOnCheckedChangeListener { _,v -> state.handsOn=v; changed() } })
         body.addView(CheckBox(context).apply { text="Duas mãos (maior consumo)"; setTextColor(ink); isChecked=state.twoHands; setOnCheckedChangeListener { _,v -> state.twoHands=v; changed() } })
+        val settings=state.interaction
+        body.addView(label("Interação VR"))
+        slider("Sensibilidade da pinça",settings.pinchThreshold,.25f,.5f) { settings.pinchThreshold=it }
+        slider("Suavização do ponteiro",settings.pointerSmoothing,0f,1f) { settings.pointerSmoothing=it }
+        slider("Permanência (segundos)",settings.dwellMs/1000f,.8f,1.2f) { settings.dwellMs=(it*1000).toInt() }
+        body.addView(button("Mão dominante: ${if(settings.dominantHand==1) "direita" else "esquerda"}") { settings.dominantHand=1-settings.dominantHand; changed(); refresh() })
+        body.addView(button("Visual das mãos: ${listOf("completas","simplificadas","ponteiros")[settings.handStyle]}") { settings.handStyle=(settings.handStyle+1)%3; changed(); refresh() })
+        slider("Tamanho do teclado",settings.keyboardScale,.7f,1.8f) { settings.keyboardScale=it }
+        slider("Distância do teclado (m)",settings.keyboardDistance,.45f,1.5f) { settings.keyboardDistance=it }
+        slider("Intensidade dos indicadores",settings.indicatorIntensity,.2f,1f) { settings.indicatorIntensity=it }
+        body.addView(CheckBox(context).apply { text="Confirmar ações importantes"; setTextColor(ink); isChecked=settings.confirmImportant; setOnCheckedChangeListener { _,v -> settings.confirmImportant=v; changed() } })
+        body.addView(CheckBox(context).apply { text="Diagnóstico: FPS, mãos, pinça e alvo"; setTextColor(ink); isChecked=settings.diagnostics; setOnCheckedChangeListener { _,v -> settings.diagnostics=v; changed() } })
+        body.addView(button("Restaurar padrões de interação") { context.getSharedPreferences("vr_interaction",0).edit().clear().apply(); settings.load(context.getSharedPreferences("vr_interaction",0)); state.dwell=false; changed(); refresh() })
         slider("Suavização da pinça",state.pinchSmooth,0f,1f) { state.pinchSmooth=it }
         slider("Escala das mãos",state.handScale,.3f,3f) { state.handScale=it }
-        body.addView(CheckBox(context).apply { text="Clique por permanência do olhar"; setTextColor(ink); isChecked=state.dwell; setOnCheckedChangeListener { _,v -> state.dwell=v } })
+        body.addView(CheckBox(context).apply { text="Clique por permanência (mão ou olhar)"; setTextColor(ink); isChecked=state.dwell; setOnCheckedChangeListener { _,v -> state.dwell=v; changed() } })
         body.addView(label("Pinça: conteúdo · Pinça na barra superior: mover · Pinça no canto: tamanho. Solte para concluir. Use o menu para distância e posição. Mouse e teclado do PC continuam locais ao Linux."))
     }
 }
