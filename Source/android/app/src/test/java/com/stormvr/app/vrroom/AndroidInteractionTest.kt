@@ -102,7 +102,13 @@ class AndroidInteractionTest {
         assertEquals(fov,state.fovDeg,0f); assertEquals(125,web.settings.textZoom)
         buttons(controls).first { it.text=="Restaurar 1.0x" }.performClick()
         assertEquals(1f,state.interaction.cameraZoom,0f)
-        state.fullscreen=true; controls.refresh(); assertFalse(plus.isEnabled)
+        val minus=buttons(controls).first { it.text=="−" }
+        assertTrue(minus.isEnabled)
+        repeat(30) { minus.performClick() }
+        assertEquals(.4f,state.interaction.cameraZoom,0f)
+        assertFalse(minus.isEnabled); assertTrue(plus.isEnabled)
+        assertEquals(fov,state.fovDeg,0f); assertEquals(125,web.settings.textZoom)
+        state.fullscreen=true; controls.refresh(); assertFalse(plus.isEnabled); assertFalse(minus.isEnabled)
         web.destroy()
     }
     @Test fun indicatorCaptureDoesNotUsePinchAndGamepadRetainsOwnership() {
