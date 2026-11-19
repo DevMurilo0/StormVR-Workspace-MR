@@ -16,6 +16,8 @@ class FingertipInteraction(
         val hitKind: Int,val index: Int,val s: Float,val z: Float,val screen: VirtualScreen?=null)
     private val gestures=Array(2) { FingertipGesture() }
     private val grip=BooleanArray(2)
+    private val stableHover=arrayOfNulls<Target>(2)
+    private val stableHoverAt=LongArray(2)
     private val motion=Array(2) { FingertipManipulation() }
     private val hoveredPose=arrayOfNulls<VrState>(2)
     private val claimedKey=arrayOfNulls<String>(2)
@@ -28,6 +30,7 @@ class FingertipInteraction(
         private set
     fun cancel() {
         grip.fill(false)
+        stableHover.fill(null); stableHoverAt.fill(0L)
         for(i in 0..1) { gestures[i].reset(); motion[i].end(); captured[i]=null; hoveredPose[i]=null; claimedKey[i]=null; missed[i]=-1 }
         state.fingertipOwned.fill(false); state.fingertipTargetId.fill(null)
         state.fingertipPhase.fill(FingertipGesture.Phase.IDLE)
@@ -80,7 +83,7 @@ class FingertipInteraction(
                 state.handsOn && (state.laserHand[i] || g.ownsTarget) && hardware<.2f
             state.fingertipOwned[i]=enabled
             if(!enabled) {
-                g.reset(); motion[i].end(); captured[i]=null; hoveredPose[i]=null; claimedKey[i]=null; state.fingertipTargetId[i]=null
+                g.reset(); motion[i].end(); captured[i]=null; hoveredPose[i]=null; claimedKey[i]=null; stableHover[i]=null; state.fingertipTargetId[i]=null
                 state.fingertipPhase[i]=g.phase
                 continue
             }
@@ -88,27 +91,31 @@ class FingertipInteraction(
             state.pressed[i]=false
             state.surfPoint(state.ax[i],state.az[i],0f,point)
             ray[0]=point[0]-state.rox[i]; ray[1]=point[1]-state.roy[i]; ray[2]=point[2]-state.roz[i]
-            var t=captured[i] ?: target(i)
             val observed=state.handValid[i] && state.handObserved[i]
             val spatialMode=state.interaction.handMode==InteractionSettings.SPATIAL
-            if(observed) grip[i]=SpatialPose.gripping(state.handInputPts[i],grip[i],state.handPinch[i])
-            val pointing=state.fingertipPointing[i]
+            // A deliberate thumb-index pinch is Enter or grab; fist detection is not a click.
+            grip[i]=observed && state.handPinch[i]
+            val pointing=observed && state.fingertipPointing[i]
+            val current=captured[i] ?: target(i)
+            if(observed && pointing && !grip[i] && !g.ownsTarget && current!=null) {
+                stableHover[i]=current
+                stableHoverAt[i]=now
+            }
+            // Pinching bends the index and can move its ray: lock the last hovered target.
+            var t=captured[i] ?: if(grip[i] && !g.ownsTarget && now-stableHoverAt[i] in 0..400) stableHover[i] ?: current else current
             val candidate=t
             val allowed=candidate?.screen?.let { it in workspace.screens && it.visible && (candidate.kind==FingertipGesture.Kind.CLICK || !it.locked) }
                 ?: (candidate==null || candidate.hitKind==Hit.KB || candidate.hitKind==Hit.TB || !state.screenHidden)
             val before=g.captured
-            val dwellOnly=state.interaction.handMode==InteractionSettings.DWELL
-            if(dwellOnly && t?.kind!=FingertipGesture.Kind.CLICK) t=null
+            // Both gestures work on content, move bars and resize handles.
             hoveredPose[i]=if((observed && pointing || g.captured) && t!=null && t.hitKind!=Hit.KB && t.hitKind!=Hit.TB) t.pose else null
             claimedKey[i]=if(observed && pointing) t?.id else null
-            val occludedTap=spatialMode && g.ownsTarget && !g.captured && target(i)?.id!=t?.id
-            val click=if(spatialMode) g.updateSpatial(t?.id,t?.kind ?: FingertipGesture.Kind.CLICK,
-                state.ax[i]/(t?.pose?.width ?: 1f),state.az[i]/(t?.pose?.width ?: 1f),
-                observed,pointing,grip[i],!allowed || occludedTap,now,.04f) else g.update(t?.id,t?.kind ?: FingertipGesture.Kind.CLICK,
+            val click=g.updateSpatial(t?.id,t?.kind ?: FingertipGesture.Kind.CLICK,
                 (t?.s ?: 0f)/(t?.pose?.width ?: 1f),(t?.z ?: 0f)/(t?.pose?.width ?: 1f),
-                observed,pointing,!allowed,now,state.interaction.dragActivationMs,state.interaction.dwellMs,
-                .012f+state.interaction.fingertipSensitivity*.025f)
-            if(spatialMode && g.ownsTarget && captured[i]==null && t!=null) captured[i]=t
+                observed,pointing,grip[i],!allowed,now,
+                .012f+state.interaction.fingertipSensitivity*.025f,
+                maxOf(1000,state.interaction.dwellMs).toLong())
+            if(g.ownsTarget && captured[i]==null && t!=null) captured[i]=t
             if(!before && g.captured && t!=null) {
                 captured[i]=t
                 val anchor=FloatArray(2)
@@ -116,7 +123,7 @@ class FingertipInteraction(
                 motion[i].begin(t.pose,if(anchored) anchor[0] else t.s,if(anchored) anchor[1] else t.z,t.index,now)
                 t.screen?.let { workspace.selectedId=it.id }
             } else if(g.captured && t!=null) {
-                if(!observed || (!spatialMode && !pointing)) motion[i].hold()
+                if(!observed) motion[i].hold()
                 else {
                     val ok=motion[i].update(t.pose,g.phase==FingertipGesture.Phase.RESIZING,state.rox[i],state.roy[i],state.roz[i],ray[0],ray[1],ray[2],now)
                     if(ok && spatialMode && g.phase!=FingertipGesture.Phase.RESIZING) motion[i].updateDepth(t.pose,state.handSpatial[i],now)
@@ -144,8 +151,8 @@ class FingertipInteraction(
                     if(sent) state.clickSentAt[i]=now
                     feedback=if(sent) "Clique enviado" else "Destino não recebeu o clique"
                 } else feedback=when(g.phase) {
-                    FingertipGesture.Phase.DRAGGING->if(spatialMode) "${motion[i].depthMotion} · abra a mão para soltar" else "Movendo · dobre o indicador para soltar"
-                    FingertipGesture.Phase.RESIZING->if(spatialMode) "Redimensionando · abra a mão para soltar" else "Redimensionando · dobre o indicador para soltar"
+                    FingertipGesture.Phase.DRAGGING->"Movendo · solte a pinça ou dobre o indicador"
+                    FingertipGesture.Phase.RESIZING->"Redimensionando · solte a pinça ou dobre o indicador"
                     FingertipGesture.Phase.ARMED->"Pronto · mantenha o indicador estável"
                     FingertipGesture.Phase.HOVER->"Alvo identificado · mantenha o indicador"
                     FingertipGesture.Phase.RELEASED->"Liberado"
